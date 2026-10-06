@@ -1,8 +1,8 @@
 {
-  "name": "aura",
+  "name": "wadesk",
   "version": "1.1.1",
   "repository": "nikhlgoel/whatsapp-pc",
-  "description": "Aura - Beautiful, Native Desktop Client",
+  "description": "WaDesk - Native Desktop Client",
   "main": "src/main.js",
   "author": "white.dev.sc",
   "license": "MIT",
@@ -26,8 +26,8 @@
         "provider": "github"
       }
     ],
-    "appId": "com.nikhlgoel.aura",
-    "productName": "Aura",
+    "appId": "com.nikhlgoel.wadesk",
+    "productName": "WaDesk",
     "directories": {
       "output": "dist",
       "buildResources": "src/assets"
@@ -62,14 +62,14 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Aura"
+      "shortcutName": "WaDesk"
     },
     "portable": {
-      "artifactName": "Aura-portable-.exe"
+      "artifactName": "WaDesk-portable-${version}.exe"
     }
   },
   "allowScripts": {
     "electron@33.4.11": true
   },
-  "productName": "Aura"
+  "productName": "WaDesk"
 }
