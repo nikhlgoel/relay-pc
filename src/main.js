@@ -15,6 +15,10 @@ const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 
 
+// Profile parsing for Multi-Account support
+const profileArgMatch = process.argv.find(arg => arg.startsWith('--profile='));
+const currentProfile = profileArgMatch ? profileArgMatch.split('=')[1] : 'default';
+const currentPartition = currentProfile === 'default' ? 'persist:whatsapp' : 'persist:whatsapp_' + currentProfile;
 
 const store = new Store({
   defaults: {
@@ -25,6 +29,7 @@ const store = new Store({
     zoom: 0,
     paneWidth: 0,
     hardwareAcceleration: true,
+      privacyBlur: false,
     lowPower: true,
     blockTelemetry: true,
     // Translucent icon rail via Windows 11 acrylic backdrop or system-wide DWM blur
@@ -191,7 +196,7 @@ function createWindow() {
     icon: asset('icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      partition: 'persist:whatsapp',
+      partition: currentPartition,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -478,6 +483,7 @@ function refreshTrayMenu() {
     toggle('Low power when hidden', 'lowPower', true),
     toggle('Block telemetry', 'blockTelemetry', true),
     toggle('Translucent sidebar', 'translucent', true),
+      toggle('Privacy Blur', 'privacyBlur', true),
     { label: 'Resource usage…', click: showResourceUsage },
     { type: 'separator' },
     { label: 'Reset sidebar width', click: resetPaneWidth },
@@ -496,7 +502,7 @@ async function resetSession() {
     message: 'This clears the saved session. You will need to scan the QR code again.'
   });
   if (response !== 1) return;
-  await session.fromPartition('persist:whatsapp').clearStorageData();
+  await session.fromPartition(currentPartition).clearStorageData();
   if (mainWindow) mainWindow.reload();
 }
 
@@ -581,6 +587,13 @@ ipcMain.on('unread-count', (_e, count) => {
 });
 
 ipcMain.on('activate-window', () => showWindow());
+
+  ipcMain.on('flash-window', () => {
+    if (mainWindow && !mainWindow.isFocused()) {
+      mainWindow.flashFrame(true);
+    }
+  });
+
 ipcMain.on('dom-debug', (_e, data) => {
   try {
     fs.writeFileSync(path.join(__dirname, '..', 'dom-debug.json'), JSON.stringify(data, null, 2));
@@ -590,6 +603,7 @@ ipcMain.on('dom-debug', (_e, data) => {
 });
 ipcMain.handle('pane-width:get', () => store.get('paneWidth'));
 ipcMain.handle('translucent:get', () => store.get('translucent'));
+ipcMain.handle('privacyBlur:get', () => store.get('privacyBlur'));
 ipcMain.handle('system:accent-color', () => getSystemAccent());
 ipcMain.on('pane-width:set', (_e, px) => store.set('paneWidth', Number(px) || 0));
 
@@ -693,6 +707,27 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   createMenu();
+  
+  if (process.platform === 'win32') {
+    app.setUserTasks([
+      {
+        program: process.execPath,
+        arguments: '--profile=Work',
+        iconPath: process.execPath,
+        iconIndex: 0,
+        title: 'Work WhatsApp',
+        description: 'Open Work Account'
+      },
+      {
+        program: process.execPath,
+        arguments: '--profile=Personal',
+        iconPath: process.execPath,
+        iconIndex: 0,
+        title: 'Personal WhatsApp',
+        description: 'Open Personal Account'
+      }
+    ]);
+  }
   
   // Auto-updater setup
   autoUpdater.checkForUpdatesAndNotify();

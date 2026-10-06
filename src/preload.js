@@ -46,7 +46,12 @@ function watchBadge() {
 // ===========================================================================
 function hookNotifications() {
   // Listen for the activation event dispatched from the page context
-  window.addEventListener('wa-activate-window', () => {
+  
+    window.addEventListener('wa-new-notification', () => {
+      ipcRenderer.send('flash-window');
+    });
+
+    window.addEventListener('wa-activate-window', () => {
     ipcRenderer.send('activate-window');
   });
 
@@ -73,6 +78,7 @@ function hookNotifications() {
       if (NativeNotification) {
         function AppNotification(title, options) {
           const n = new NativeNotification(title, options);
+          window.dispatchEvent(new CustomEvent("wa-new-notification"));
           n.addEventListener('click', notifyActivation);
           return n;
         }
@@ -341,6 +347,46 @@ const CSS = `
   /* Prevent overlap with titleBarOverlay window controls (minimize, maximize, close) on the right */
   #main > header {
     padding-right: 140px !important;
+  }
+
+
+  /* Minimal Scrollbars */
+  ::-webkit-scrollbar { width: 4px !important; height: 4px !important; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1) !important; border-radius: 4px !important; }
+  ::-webkit-scrollbar-track { background: transparent !important; }
+
+  /* Sidebar fading for inactive chats */
+  [data-wa-pane="side"]:has([aria-selected="true"]) [role="row"]:not(:has([aria-selected="true"])) {
+    opacity: 0.5;
+    transition: opacity 0.3s ease;
+    filter: grayscale(0.5);
+  }
+  [data-wa-pane="side"] [role="row"]:hover {
+    opacity: 1 !important;
+    filter: none !important;
+  }
+
+  /* Active chat glow */
+  [data-wa-pane="side"] [role="row"]:has([aria-selected="true"]) {
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.05) inset;
+    border-left: 3px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255,255,255,0.02);
+    transition: all 0.3s ease;
+  }
+
+  /* Privacy Blur class */
+  body.privacy-blur-active .message-in,
+  body.privacy-blur-active .message-out,
+  body.privacy-blur-active [data-testid="chat-list"] img,
+  body.privacy-blur-active [data-testid="chat-list"] [dir="ltr"] {
+    filter: blur(5px);
+    transition: filter 0.3s ease;
+  }
+  body.privacy-blur-active .message-in:hover,
+  body.privacy-blur-active .message-out:hover,
+  body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover img,
+  body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover [dir="ltr"] {
+    filter: blur(0px);
   }
 
   /* Exclude buttons from drag region so they remain clickable */
@@ -646,6 +692,16 @@ async function setupPanes() {
   document.head.appendChild(style);
 
   createSplitter();
+
+ipcRenderer.on('privacyBlur', (e, state) => {
+  if (state) document.body.classList.add('privacy-blur-active');
+  else document.body.classList.remove('privacy-blur-active');
+});
+
+ipcRenderer.invoke('privacyBlur:get').then(state => {
+  if (state) document.body.classList.add('privacy-blur-active');
+});
+
 
   translucent = await ipcRenderer.invoke('translucent:get');
   try {
