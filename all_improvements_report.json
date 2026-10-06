@@ -1,0 +1,28 @@
+{
+  "splitterExists": true,
+  "splitterZIndex": "5",
+  "splitterHiddenOnModal": true,
+  "splitterRestoredAfterModal": true,
+  "hasAudio": true,
+  "hasVideo": true,
+  "videoSettings": {
+    "aspectRatio": 1.7777777777777777,
+    "deviceId": "MDXRTp1KFo+VWFP1XCH+T+qcb4OmvheIjNe6SLQYZcweh4izB944PQ1gi3GPufDP0N8ZusU8NgWvH/IFtfAVyA==",
+    "frameRate": 30,
+    "height": 720,
+    "resizeMode": "none",
+    "width": 1280
+  },
+  "audioSettings": {
+    "autoGainControl": true,
+    "channelCount": 1,
+    "deviceId": "default",
+    "echoCancellation": true,
+    "groupId": "0477452e5f9135fc491818d959e95e8343bf07030c8b14761712acee4522a44b",
+    "latency": 0.01,
+    "noiseSuppression": true,
+    "sampleRate": 48000,
+    "sampleSize": 16,
+    "voiceIsolation": false
+  }
+}

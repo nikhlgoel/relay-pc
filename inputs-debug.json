@@ -1,0 +1,13 @@
+{
+  "inputs": [
+    {
+      "accept": "*",
+      "multiple": true,
+      "id": "",
+      "name": "",
+      "parentTag": "DIV",
+      "parentClass": ""
+    }
+  ],
+  "hasMain": false
+}

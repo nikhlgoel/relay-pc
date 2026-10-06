@@ -1,0 +1,20 @@
+{
+  "mainInspection": {
+    "hasMain": true,
+    "hasFooter": true,
+    "hasInput": true,
+    "hasAttachBtn": false,
+    "fileInputs": [
+      {
+        "accept": "image/*",
+        "id": "",
+        "multiple": false
+      }
+    ]
+  },
+  "attachTest": {
+    "methodPastePreview": false,
+    "methodDropPreview": false,
+    "methodInputPreview": false
+  }
+}

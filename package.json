@@ -1,0 +1,75 @@
+{
+  "name": "whatsapp-pc",
+  "version": "1.1.1",
+  "repository": "nikhlgoel/whatsapp-pc",
+  "description": "A fast, lightweight WhatsApp desktop client",
+  "main": "src/main.js",
+  "author": "white.dev.sc",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron . --remote-debugging-port=9222",
+    "icons": "electron tools/make-icons.js",
+    "dist": "electron-builder --win",
+    "pack": "electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-context-menu": "^5.1.0",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "publish": [
+      {
+        "provider": "github"
+      }
+    ],
+    "appId": "com.whitedev.whatsapppc",
+    "productName": "WhatsApp",
+    "directories": {
+      "output": "dist",
+      "buildResources": "src/assets"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/assets/get_clipboard_files.exe"
+    ],
+    "win": {
+      "icon": "src/assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WhatsApp"
+    },
+    "portable": {
+      "artifactName": "WhatsApp-portable-${version}.exe"
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}

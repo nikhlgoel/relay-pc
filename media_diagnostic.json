@@ -1,0 +1,4 @@
+{
+  "enumerateDevicesError": "TypeError: Cannot read properties of undefined (reading 'enumerateDevices')",
+  "getUserMediaError": "TypeError: Cannot read properties of undefined (reading 'getUserMedia')"
+}
