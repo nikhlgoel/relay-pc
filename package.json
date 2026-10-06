@@ -69,7 +69,11 @@
     }
   },
   "allowScripts": {
-    "electron@33.4.11": true
+    "electron@33.4.11": true,
+    "electron-winstaller@5.4.0": true
   },
-  "productName": "Relay"
+  "productName": "Relay",
+  "overrides": {
+    "@electron/get": "^5.1.0"
+  }
 }
