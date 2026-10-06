@@ -11,15 +11,10 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const Store = require('electron-store');
-const contextMenu = require('electron-context-menu');
+
 const { autoUpdater } = require('electron-updater');
 
-contextMenu({
-  showSaveImageAs: true,
-  showCopyImage: true,
-  showSearchWithGoogle: false,
-  showInspectElement: false
-});
+
 
 const store = new Store({
   defaults: {
@@ -364,6 +359,20 @@ function showContextMenu(ses, params) {
       label: 'Add to dictionary',
       click: () => ses.addWordToSpellCheckerDictionary(params.misspelledWord)
     });
+    items.push({ type: 'separator' });
+  }
+
+  if (params.hasImageContents) {
+    items.push({
+      label: 'Copy image',
+      click: () => mainWindow.webContents.copyImageAt(params.x, params.y)
+    });
+    if (params.srcURL) {
+      items.push({
+        label: 'Save image as...',
+        click: () => mainWindow.webContents.downloadURL(params.srcURL)
+      });
+    }
     items.push({ type: 'separator' });
   }
 
