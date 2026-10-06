@@ -62,7 +62,12 @@ function hookNotifications() {
   const script = document.createElement('script');
   script.textContent = `
     (() => {
-      function notifyActivation() {
+      
+    setInterval(() => {
+      if (window.gc) window.gc();
+    }, 60000);
+
+        function notifyActivation() {
         window.dispatchEvent(new CustomEvent('wa-activate-window'));
       }
 

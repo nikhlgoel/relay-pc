@@ -90,6 +90,7 @@ function configureRuntime() {
   // Memory and background stability optimizations
   app.commandLine.appendSwitch('disable-site-isolation-trials');
   app.commandLine.appendSwitch('process-per-site');
+  app.commandLine.appendSwitch('js-flags', '--expose-gc --max-old-space-size=384');
   app.commandLine.appendSwitch('disable-background-timer-throttling');
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
   
@@ -192,7 +193,7 @@ function createWindow() {
     },
     transparent: true,
     backgroundColor: '#00000000',
-    title: 'WaDesk',
+    title: 'Relay',
     icon: asset('icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -249,7 +250,14 @@ function createWindow() {
   // Allow enumerating and selecting audio/video hardware devices
   ses.setDevicePermissionHandler(() => true);
 
-  mainWindow.loadURL(WHATSAPP_URL, { userAgent: CHROME_UA });
+  
+  let initialUrl = WHATSAPP_URL;
+  const deepLinkArg = process.argv.find(arg => arg.startsWith('whatsapp://'));
+  if (deepLinkArg) {
+    initialUrl = deepLinkArg.replace('whatsapp://', 'https://web.whatsapp.com/');
+  }
+  mainWindow.loadURL(initialUrl, { userAgent: CHROME_UA });
+
 
   mainWindow.once('ready-to-show', () => {
     if (!store.get('startMinimized')) mainWindow.show();
@@ -433,7 +441,7 @@ function showWindow() {
 function createTray() {
   const icon = nativeImage.createFromPath(asset('tray.png'));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip('WaDesk');
+  tray.setToolTip('Relay');
   tray.on('click', toggleWindow);
   refreshTrayMenu();
 }
@@ -468,7 +476,7 @@ function toggle(label, key, restart) {
 function refreshTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open WaDesk', click: showWindow },
+    { label: 'Open Relay', click: showWindow },
     { type: 'separator' },
     toggle('Close to tray', 'minimizeToTray'),
     toggle('Start minimized', 'startMinimized'),
@@ -583,7 +591,7 @@ ipcMain.on('unread-count', (_e, count) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const n = Number(count) || 0;
   mainWindow.setOverlayIcon(n > 0 ? badgeIcon(n) : null, n > 0 ? n + ' unread' : '');
-  if (tray) tray.setToolTip(n > 0 ? 'WhatsApp — ' + n + ' unread' : 'WaDesk');
+  if (tray) tray.setToolTip(n > 0 ? 'WhatsApp — ' + n + ' unread' : 'Relay');
 });
 
 ipcMain.on('activate-window', () => showWindow());
@@ -715,7 +723,7 @@ app.whenReady().then(() => {
         arguments: '--profile=Work',
         iconPath: process.execPath,
         iconIndex: 0,
-        title: 'WaDesk - Work',
+        title: 'Relay - Work',
         description: 'Open Work Account'
       },
       {
@@ -723,7 +731,7 @@ app.whenReady().then(() => {
         arguments: '--profile=Personal',
         iconPath: process.execPath,
         iconIndex: 0,
-        title: 'WaDesk - Personal',
+        title: 'Relay - Personal',
         description: 'Open Personal Account'
       }
     ]);
