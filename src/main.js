@@ -82,9 +82,11 @@ function configureRuntime() {
   app.commandLine.appendSwitch('disable-sync');
   app.commandLine.appendSwitch('no-pings');
   
-  // Memory optimization (without breaking WebAssembly media decryption)
+  // Memory and background stability optimizations
   app.commandLine.appendSwitch('disable-site-isolation-trials');
   app.commandLine.appendSwitch('process-per-site');
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
   
   app.commandLine.appendSwitch('disk-cache-size', String(96 * 1024 * 1024));
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -107,11 +109,26 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('whatsapp', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('whatsapp');
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    showWindow();
+    const url = commandLine.find(arg => arg.startsWith('whatsapp://'));
+    if (url && mainWindow && !mainWindow.isDestroyed()) {
+      const webUrl = url.replace('whatsapp://', 'https://web.whatsapp.com/');
+      mainWindow.loadURL(webUrl, { userAgent: CHROME_UA });
+    }
+  });
 }
 
 function asset(name) {
