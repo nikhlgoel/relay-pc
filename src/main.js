@@ -192,7 +192,7 @@ function createWindow() {
     },
     transparent: true,
     backgroundColor: '#00000000',
-    title: 'WhatsApp',
+    title: 'Aura',
     icon: asset('icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -433,7 +433,7 @@ function showWindow() {
 function createTray() {
   const icon = nativeImage.createFromPath(asset('tray.png'));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip('WhatsApp');
+  tray.setToolTip('Aura');
   tray.on('click', toggleWindow);
   refreshTrayMenu();
 }
@@ -468,7 +468,7 @@ function toggle(label, key, restart) {
 function refreshTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open WhatsApp', click: showWindow },
+    { label: 'Open Aura', click: showWindow },
     { type: 'separator' },
     toggle('Close to tray', 'minimizeToTray'),
     toggle('Start minimized', 'startMinimized'),
@@ -583,7 +583,7 @@ ipcMain.on('unread-count', (_e, count) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const n = Number(count) || 0;
   mainWindow.setOverlayIcon(n > 0 ? badgeIcon(n) : null, n > 0 ? n + ' unread' : '');
-  if (tray) tray.setToolTip(n > 0 ? 'WhatsApp — ' + n + ' unread' : 'WhatsApp');
+  if (tray) tray.setToolTip(n > 0 ? 'WhatsApp — ' + n + ' unread' : 'Aura');
 });
 
 ipcMain.on('activate-window', () => showWindow());
@@ -715,7 +715,7 @@ app.whenReady().then(() => {
         arguments: '--profile=Work',
         iconPath: process.execPath,
         iconIndex: 0,
-        title: 'Work WhatsApp',
+        title: 'Aura - Work',
         description: 'Open Work Account'
       },
       {
@@ -723,7 +723,7 @@ app.whenReady().then(() => {
         arguments: '--profile=Personal',
         iconPath: process.execPath,
         iconIndex: 0,
-        title: 'Personal WhatsApp',
+        title: 'Aura - Personal',
         description: 'Open Personal Account'
       }
     ]);

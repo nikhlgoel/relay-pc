@@ -374,6 +374,89 @@ const CSS = `
     transition: all 0.3s ease;
   }
 
+
+  /* AURA / TELEGRAM UI THEME */
+  :root {
+    /* Main Dark Theme Colors - Telegram Desktop Night Mode */
+    --background-default: #0e1621 !important;
+    --background-default-hover: #202b36 !important;
+    --background-default-active: #2b5278 !important;
+    --panel-header-background: #17212b !important;
+    --panel-background: #17212b !important;
+    --panel-background-hover: #202b36 !important;
+    --panel-background-active: #2b5278 !important;
+    
+    --message-in: #182533 !important;
+    --message-out: #2b5278 !important;
+    --outgoing-background: #2b5278 !important;
+    --incoming-background: #182533 !important;
+    
+    --compose-input-background: #17212b !important;
+    --compose-primary: #ffffff !important;
+    --compose-panel-background: #0e1621 !important;
+    
+    --teal: #5288c1 !important;
+    --teal-light: #5288c1 !important;
+    --primary: #5288c1 !important;
+    --primary-strong: #5288c1 !important;
+    
+    --system-message-background: rgba(23, 33, 43, 0.6) !important;
+    --system-message-text: #8e9bb0 !important;
+  }
+
+  /* Chat Bubbles - Telegram style (12px rounded) */
+  [data-testid="msg-container"] {
+    border-radius: 12px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15) !important;
+  }
+  
+  /* Remove chat background doodle and replace with gradient */
+  [data-asset-chat-background-dark] { display: none !important; }
+  ._33LGR, [data-wa-pane="main"] > div:nth-child(2) {
+    background: linear-gradient(135deg, #0e1621 0%, #17212b 100%) !important;
+  }
+
+  /* Input Field - Pill shape */
+  [data-testid="conversation-compose-box-input"] {
+    border-radius: 24px !important;
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+    background-color: #17212b !important;
+    border: 1px solid rgba(255,255,255,0.05) !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+  }
+
+  /* Chat List / Folders Filter */
+  [data-testid="filter-list"] {
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+    background: #17212b !important;
+    border-bottom: 1px solid rgba(0,0,0,0.2) !important;
+  }
+  [data-testid="filter-list"] button {
+    border-radius: 8px !important;
+    background: rgba(255,255,255,0.05) !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+  }
+  [data-testid="filter-list"] button[aria-pressed="true"] {
+    background: #2b5278 !important;
+    color: #fff !important;
+  }
+
+  /* Adjust our previously added active chat glow for Telegram Blue */
+  [data-wa-pane="side"] [role="row"]:has([aria-selected="true"]) {
+    box-shadow: 0 0 15px rgba(82, 136, 193, 0.15) inset !important;
+    border-left: 3px solid #5288c1 !important;
+    background: #2b5278 !important;
+    transition: all 0.2s ease;
+  }
+  
+  /* Floating Action Button (New Chat) adjustment */
+  [data-testid="chat-list"] button[title="New chat"] {
+    background-color: #5288c1 !important;
+  }
+
   /* Privacy Blur class */
   body.privacy-blur-active .message-in,
   body.privacy-blur-active .message-out,
