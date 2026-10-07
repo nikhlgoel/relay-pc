@@ -404,10 +404,8 @@ async function setupLayout() {
 //  Microphone: Chromium's DSP (echo cancellation, noise suppression, AGC) runs
 //    on capture, then a WebAudio chain: high-pass (desk rumble / mic handling),
 //    presence EQ, compressor, make-up gain, limiter.
-//  Camera: frames are redrawn through a canvas whose exposure adapts to how
-//    dark the picture is. A fixed filter over-brightened well-lit rooms and the
-//    old code also wrote absolute brightness/contrast values into the camera
-//    driver, which stuck around after the call.
+//  Camera: frames go through a GPU pipeline (denoise, face-weighted shadow lift,
+//    white balance, sharpen). Nothing is written to the camera driver.
 //
 // If anything throws, the page gets the untouched device track.
 // ===========================================================================
@@ -532,35 +530,314 @@ function hookMediaDevices() {
     }
 
     // ---- Camera ----------------------------------------------------------
-    const TARGET_LUMA = 120;   // mid-tone a well exposed face sits around
+    //
+    // A webcam looking up at ceiling lights meters for the lights, so the face
+    // comes out dark, flat and noisy. Every frame goes through a small GPU
+    // pipeline instead of one brightness multiplier:
+    //   1. denoise    edge-preserving 3x3 blur + motion-aware blend with the
+    //                 previous frame (noise is random, a face is not)
+    //   2. white balance  small correction from neutral mid-tones
+    //   3. shadow lift   a gamma lift whose strength is measured on the CENTRE of
+    //                 the picture, where the face is - bright walls and lamps
+    //                 no longer fool it - and which never pushes whites past 1
+    //   4. contrast, saturation, then an unsharp mask on the denoised image
+    // Falls back to a plain canvas filter if WebGL2 is unavailable.
+
+    const TARGET_CENTER_LUMA = 0.5;    // where a well exposed face sits (encoded)
+    const MAX_LIFT = 1.65;
+
+    const VERT = '#version 300 es\n' +
+      'out vec2 vUv;\n' +
+      'void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n' +
+      '  vUv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }';
+
+    const FRAG_DENOISE = '#version 300 es\n' +
+      'precision highp float;\n' +
+      'uniform sampler2D uVideo; uniform sampler2D uPrev;\n' +
+      'uniform vec2 uTexel; uniform float uFirst;\n' +
+      'in vec2 vUv; out vec4 o;\n' +
+      'float lum(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n' +
+      'void main(){\n' +
+      '  vec3 c = texture(uVideo, vUv).rgb; float lc = lum(c);\n' +
+      '  float sigma = mix(0.09, 0.035, smoothstep(0.0, 0.5, lc));\n' +   // noisier in shadows
+      '  vec3 acc = c; float wsum = 1.0;\n' +
+      '  for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {\n' +
+      '    if (dx == 0 && dy == 0) continue;\n' +
+      '    vec3 n = texture(uVideo, vUv + vec2(float(dx), float(dy)) * uTexel).rgb;\n' +
+      '    float d = lum(n) - lc;\n' +
+      '    float w = exp(-(d * d) / (2.0 * sigma * sigma)) * ((dx == 0 || dy == 0) ? 1.0 : 0.7);\n' +
+      '    acc += n * w; wsum += w; }\n' +
+      '  vec3 s = mix(c, acc / wsum, 0.75);\n' +
+      '  vec3 p = texture(uPrev, vUv).rgb;\n' +
+      '  float wt = (1.0 - smoothstep(0.015, 0.09, abs(lum(s) - lum(p)))) * 0.55 * (1.0 - uFirst);\n' +
+      '  o = vec4(mix(s, p, wt), 1.0);\n' +
+      '}';
+
+    const FRAG_TONE = '#version 300 es\n' +
+      'precision highp float;\n' +
+      'uniform sampler2D uT; uniform vec2 uTexel;\n' +
+      'uniform float uLift; uniform float uContrast; uniform float uSat; uniform float uSharp; uniform vec3 uGain;\n' +
+      'in vec2 vUv; out vec4 o;\n' +
+      'void main(){\n' +
+      '  vec3 c = texture(uT, vUv).rgb;\n' +
+      '  vec3 b = c * 4.0\n' +
+      '    + (texture(uT, vUv + vec2(uTexel.x, 0.0)).rgb + texture(uT, vUv - vec2(uTexel.x, 0.0)).rgb\n' +
+      '     + texture(uT, vUv + vec2(0.0, uTexel.y)).rgb + texture(uT, vUv - vec2(0.0, uTexel.y)).rgb) * 2.0\n' +
+      '    + texture(uT, vUv + uTexel).rgb + texture(uT, vUv - uTexel).rgb\n' +
+      '    + texture(uT, vUv + vec2(uTexel.x, -uTexel.y)).rgb + texture(uT, vUv + vec2(-uTexel.x, uTexel.y)).rgb;\n' +
+      '  b /= 16.0;\n' +
+      '  vec3 detail = clamp(c - b, -0.06, 0.06);\n' +                    // clamped: no halos
+      '  vec3 g = max(c * uGain, 0.0);\n' +
+      '  float gl = dot(g, vec3(0.2126, 0.7152, 0.0722));\n' +
+      // Lift the shadows and mid-tones where the face lives; leave deep blacks
+      // black and bright walls / lamps exactly where the camera put them.
+      '  float amount = smoothstep(0.02, 0.2, gl) * (1.0 - smoothstep(0.5, 0.92, gl));\n' +
+      '  vec3 x = mix(g, pow(g, vec3(1.0 / uLift)), amount);\n' +
+      '  x = mix(x, x * x * (3.0 - 2.0 * x), uContrast);\n' +
+      '  float l = dot(x, vec3(0.2126, 0.7152, 0.0722));\n' +
+      '  x = mix(vec3(l), x, uSat);\n' +
+      '  x += detail * uSharp * (0.8 + 0.5 * uLift);\n' +
+      '  o = vec4(clamp(x, 0.0, 1.0), 1.0);\n' +
+      '}';
+
+    /**
+     * Measures the picture ~3-5x a second and eases the correction so it never
+     * pumps. What matters is the exposure of the FACE, not of the frame: a
+     * webcam under ceiling lights has a dark face against bright walls, so the
+     * frame average says "fine". Skin-coloured pixels near the centre are
+     * metered; if there are none (camera pointed elsewhere) the darker part of
+     * the centre is used instead.
+     */
+    function createMeter() {
+      const probe = document.createElement('canvas');
+      probe.width = 64;
+      probe.height = 36;
+      const pctx = probe.getContext('2d', { willReadFrequently: true });
+      const m = { lift: 1, gain: [1, 1, 1], frame: 0, ready: false };
+      m.update = function (video) {
+        if (m.frame++ % 6) return;
+        pctx.drawImage(video, 0, 0, 64, 36);
+        const px = pctx.getImageData(0, 0, 64, 36).data;
+        let skinW = 0, skinL = 0, skinN = 0, n = 0, ar = 0, ag = 0, ab = 0;
+        const centre = [];
+        for (let y = 0; y < 36; y++) {
+          for (let x = 0; x < 64; x++) {
+            const i = (y * 64 + x) * 4;
+            const r = px[i], g = px[i + 1], b = px[i + 2];
+            const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+            const cx = (x + 0.5) / 64 - 0.5, cy = (y + 0.5) / 36 - 0.58;
+            const w = Math.exp(-(cx * cx / (2 * 0.22 * 0.22) + cy * cy / (2 * 0.3 * 0.3)));
+            if (w > 0.3) centre.push(l);
+            // Skin in YCbCr, which is fairly stable across light levels.
+            const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+            const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+            if (l > 0.06 && l < 0.8 && cb > 77 && cb < 127 && cr > 133 && cr < 173 && r > g && r > b) {
+              skinW += w; skinL += w * l; skinN++;
+            }
+            // Neutral-ish mid-tones are what tell us about the colour cast.
+            if (l > 0.25 && l < 0.85 && (Math.max(r, g, b) - Math.min(r, g, b)) < 36) {
+              ar += r; ag += g; ab += b; n++;
+            }
+          }
+        }
+        let subject;
+        if (skinN >= 40 && skinW > 0) {
+          subject = skinL / skinW;
+        } else {
+          centre.sort((p, q) => p - q);
+          subject = centre.length ? centre[Math.floor(centre.length * 0.35)] : TARGET_CENTER_LUMA;
+        }
+        subject = Math.max(subject, 0.04);
+        const wanted = Math.min(MAX_LIFT, Math.max(1, Math.log(subject) / Math.log(TARGET_CENTER_LUMA)));
+        // The first reading applies at once so the picture does not ease in slowly.
+        m.lift = m.ready ? m.lift + (wanted - m.lift) * 0.25 : wanted;
+        if (n > 64 * 36 * 0.04 && ar > 0 && ab > 0) {
+          const clampG = (v) => Math.min(1.1, Math.max(0.9, v));
+          const target = [clampG(ag / ar), 1, clampG(ag / ab)];
+          for (let k = 0; k < 3; k++) m.gain[k] = m.ready ? m.gain[k] + (target[k] - m.gain[k]) * 0.15 : target[k];
+        }
+        m.ready = true;
+      };
+      return m;
+    }
+
+    function createGLRenderer() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const gl = canvas.getContext('webgl2', {
+        alpha: false, antialias: false, depth: false, stencil: false, desynchronized: true
+      });
+      if (!gl) throw new Error('no webgl2');
+
+      const half = gl.getExtension('EXT_color_buffer_half_float') || gl.getExtension('EXT_color_buffer_float');
+      const compile = (type, src) => {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+        return s;
+      };
+      const program = (frag) => {
+        const p = gl.createProgram();
+        gl.attachShader(p, compile(gl.VERTEX_SHADER, VERT));
+        gl.attachShader(p, compile(gl.FRAGMENT_SHADER, frag));
+        gl.linkProgram(p);
+        if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+        const u = {};
+        const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+        for (let i = 0; i < count; i++) {
+          const name = gl.getActiveUniform(p, i).name;
+          u[name] = gl.getUniformLocation(p, name);
+        }
+        return { p, u };
+      };
+      const denoise = program(FRAG_DENOISE);
+      const tone = program(FRAG_TONE);
+      const vao = gl.createVertexArray();
+
+      const texture = (w, h, float) => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        return t;
+      };
+
+      let w = 0, h = 0, videoTex = null, hist = [], fbos = [], cur = 0, first = 1;
+      const allocate = (nw, nh) => {
+        w = nw; h = nh;
+        canvas.width = w; canvas.height = h;
+        videoTex = texture(w, h, false);
+        hist = [texture(w, h, Boolean(half)), texture(w, h, Boolean(half))];
+        fbos = hist.map((t) => {
+          const f = gl.createFramebuffer();
+          gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+          return f;
+        });
+        first = 1;
+      };
+
+      let lost = false;
+      canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; });
+      canvas.addEventListener('webglcontextrestored', () => { lost = false; w = 0; });
+
+      return {
+        canvas,
+        kind: 'webgl',
+        draw(video, p) {
+          if (lost || !video.videoWidth) return false;
+          if (video.videoWidth !== w || video.videoHeight !== h) allocate(video.videoWidth, video.videoHeight);
+          gl.bindVertexArray(vao);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, videoTex);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+          // Pass 1: denoise into hist[cur], reading last frame from hist[1 - cur].
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fbos[cur]);
+          gl.viewport(0, 0, w, h);
+          gl.useProgram(denoise.p);
+          gl.uniform1i(denoise.u.uVideo, 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, hist[1 - cur]);
+          gl.uniform1i(denoise.u.uPrev, 1);
+          gl.uniform2f(denoise.u.uTexel, 1 / w, 1 / h);
+          gl.uniform1f(denoise.u.uFirst, first);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+          // Pass 2: tone + sharpen to the canvas.
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, w, h);
+          gl.useProgram(tone.p);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, hist[cur]);
+          gl.uniform1i(tone.u.uT, 0);
+          gl.uniform2f(tone.u.uTexel, 1 / w, 1 / h);
+          gl.uniform1f(tone.u.uLift, p.lift);
+          gl.uniform1f(tone.u.uContrast, 0.12);
+          gl.uniform1f(tone.u.uSat, 1.1);
+          gl.uniform1f(tone.u.uSharp, 0.9);
+          gl.uniform3f(tone.u.uGain, p.gain[0], p.gain[1], p.gain[2]);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+          cur = 1 - cur;
+          first = 0;
+          return true;
+        }
+      };
+    }
+
+    function create2DRenderer() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+      if (!ctx) throw new Error('no 2d context');
+      return {
+        canvas,
+        kind: '2d',
+        draw(video, p) {
+          if (!video.videoWidth) return false;
+          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+          }
+          const b = Math.min(1.7, 1 + (p.lift - 1) * 0.9);
+          ctx.filter = 'brightness(' + b.toFixed(3) + ') contrast(1.08) saturate(1.08)';
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          return true;
+        }
+      };
+    }
+
+    /**
+     * Earlier Relay builds wrote brightness 25 / contrast 18 into the camera
+     * driver, where they stayed for every app, and left the picture flat and
+     * washed out. Spot exactly that signature and put the controls back to
+     * neutral. Cameras that are set to anything else are left alone.
+     */
+    async function resetStaleCameraSettings(raw) {
+      try {
+        const s = raw.getSettings();
+        if (s.brightness !== 25 || s.contrast !== 18) return;
+        const c = raw.getCapabilities();
+        const at = (cap, f) => (cap ? Math.round(cap.min + (cap.max - cap.min) * f) : undefined);
+        const adv = {};
+        const set = (k, v) => { if (v !== undefined) adv[k] = v; };
+        set('brightness', at(c.brightness, 0.5));
+        set('contrast', at(c.contrast, 0.34));
+        set('saturation', at(c.saturation, 0.64));
+        set('sharpness', at(c.sharpness, 0.5));
+        await raw.applyConstraints({ advanced: [adv] });
+      } catch (e) { /* not every camera exposes these */ }
+    }
 
     function enhanceVideoTrack(raw) {
-      const s = raw.getSettings ? raw.getSettings() : {};
-
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
       video.srcObject = new MediaStream([raw]);
 
-      const canvas = document.createElement('canvas');
-      canvas.width = s.width || 1280;
-      canvas.height = s.height || 720;
-      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-      if (!ctx) throw new Error('no 2d context');
-
-      const probe = document.createElement('canvas');
-      probe.width = 32;
-      probe.height = 18;
-      const pctx = probe.getContext('2d', { willReadFrequently: true });
-
+      let renderer;
+      try {
+        renderer = createGLRenderer();
+      } catch (e) {
+        console.warn('[Relay] GPU camera pipeline unavailable, using canvas filter:', e);
+        renderer = create2DRenderer();
+      }
       // captureStream(0) + requestFrame(): one output frame per camera frame,
       // not a fixed 30 fps clock that duplicates frames and wastes encoder time.
-      const out = canvas.captureStream(0).getVideoTracks()[0];
+      const out = renderer.canvas.captureStream(0).getVideoTracks()[0];
       if (!out) throw new Error('no capture track');
 
+      const meter = createMeter();
       let active = true;
-      let exposure = 1;
-      let frame = 0;
 
       const schedule = () => {
         if (!active) return;
@@ -571,26 +848,8 @@ function hookMediaDevices() {
       function render() {
         if (!active) return;
         if (video.videoWidth) {
-          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-          }
-          // Re-measure the scene about twice a second and ease toward it, so
-          // the picture never pumps.
-          if (frame++ % 15 === 0) {
-            pctx.drawImage(video, 0, 0, 32, 18);
-            const px = pctx.getImageData(0, 0, 32, 18).data;
-            let sum = 0;
-            for (let i = 0; i < px.length; i += 4) {
-              sum += px[i] * 0.2126 + px[i + 1] * 0.7152 + px[i + 2] * 0.0722;
-            }
-            const luma = sum / (px.length / 4) || 1;
-            const wanted = Math.min(1.7, Math.max(0.95, TARGET_LUMA / luma));
-            exposure += (wanted - exposure) * 0.25;
-          }
-          ctx.filter = 'brightness(' + exposure.toFixed(3) + ') contrast(1.08) saturate(1.06)';
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          if (out.requestFrame) out.requestFrame();
+          meter.update(video);
+          if (renderer.draw(video, meter) && out.requestFrame) out.requestFrame();
         }
         schedule();
       }
@@ -638,7 +897,12 @@ function hookMediaDevices() {
 
       const stream = await origGetUserMedia(next);
       if (p.audio) for (const t of stream.getAudioTracks()) swap(stream, t, enhanceAudioTrack);
-      if (p.video) for (const t of stream.getVideoTracks()) swap(stream, t, enhanceVideoTrack);
+      if (p.video) {
+        for (const t of stream.getVideoTracks()) {
+          await resetStaleCameraSettings(t);
+          swap(stream, t, enhanceVideoTrack);
+        }
+      }
       return stream;
     };
   }

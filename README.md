@@ -11,7 +11,7 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Native notifications; clicking one brings the window forward
 - Unread badge on the taskbar icon
 - Voice and video calls with screen sharing. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
-- Call quality: adaptive camera exposure, voice EQ, compression and limiting (tray toggles)
+- Call quality: GPU camera cleanup (face-weighted exposure, shadow lift, colour correction, denoise, sharpen) and voice EQ, compression and limiting (tray toggles)
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
 - Context-aware right-click menu (links, images, text, inputs)
