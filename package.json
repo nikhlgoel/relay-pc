@@ -2,12 +2,15 @@
   "name": "relay",
   "version": "0.2.2",
   "repository": "nikhlgoel/whatsapp-pc",
-  "description": "Relay - Native Desktop Client",
+  "description": "Relay - a native Windows desktop client for WhatsApp",
+  "productName": "Relay",
   "main": "src/main.js",
   "author": "white.dev.sc",
   "license": "MIT",
   "scripts": {
-    "start": "electron . --remote-debugging-port=9222",
+    "start": "electron .",
+    "start:debug": "electron . --remote-debugging-port=9222",
+    "test": "node --test \"test/*.test.js\"",
     "icons": "electron tools/make-icons.js",
     "dist": "electron-builder --win",
     "pack": "electron-builder --win --dir"
@@ -35,9 +38,6 @@
     "files": [
       "src/**/*",
       "package.json"
-    ],
-    "asarUnpack": [
-      "**/assets/get_clipboard_files.exe"
     ],
     "win": {
       "icon": "src/assets/icon.ico",
@@ -68,11 +68,6 @@
       "artifactName": "Relay-portable-${version}.exe"
     }
   },
-  "allowScripts": {
-    "electron@33.4.11": true,
-    "electron-winstaller@5.4.0": true
-  },
-  "productName": "Relay",
   "overrides": {
     "@electron/get": "^5.1.0"
   }

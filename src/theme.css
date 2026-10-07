@@ -1,0 +1,250 @@
+/* Relay theme. Injected by main.js on every page load (webContents.insertCSS).
+   Selectors lean on stable hooks - ids, data-testid, ARIA roles and the
+   data-wa-* marks that preload.js puts on the layout columns - never on
+   WhatsApp's generated class names. */
+
+[data-wa-hidden] { display: none !important; }
+
+/* --- Layout columns ----------------------------------------------------
+   WhatsApp lays out rail | side | main as a flex row and gives the chat list a
+   fixed 360px. We only override the width of that one column; main and the
+   drawers keep WhatsApp's own flex rules. The structural selector applies the
+   width the instant React mounts the column, before preload.js has marked it. */
+[data-testid="wa-web-main-screen"] > div > div:has(#pane-side),
+[data-wa-pane="side"] {
+  width: var(--wa-side-width, 360px) !important;
+  min-width: var(--wa-side-width, 360px) !important;
+  max-width: var(--wa-side-width, 360px) !important;
+  flex: 0 0 var(--wa-side-width, 360px) !important;
+}
+[data-wa-pane="side"] { position: relative; }
+
+/* Hairline dividers between the rail, the chat list and the conversation. */
+[data-wa-pane],
+#main,
+#pane-side {
+  border-left: none !important;
+  border-right: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* The chat list paints a faint white scrollbar thumb in its gutter, which reads
+   as a thin line between the panes. Hide it unless the list is hovered. */
+#pane-side:not(:hover) { scrollbar-color: transparent transparent !important; }
+#pane-side:not(:hover)::-webkit-scrollbar-thumb { background: transparent !important; }
+
+/* --- Resize handle (child of the side column) --------------------------- */
+#wa-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -5px;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+}
+#wa-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: #5288c1;
+  opacity: 0;
+  transition: opacity .12s ease-out;
+}
+#wa-splitter:hover::after,
+#wa-splitter[data-dragging]::after { opacity: 1; }
+html[data-wa-dragging] * { cursor: col-resize !important; user-select: none !important; }
+
+/* --- Window dragging ----------------------------------------------------
+   The window has no title bar, so the shaded header regions are the handle.
+   #wa-dragstrip is the first element in <body>: Chromium resolves overlapping
+   regions in document order, so every no-drag control below it still wins. */
+#wa-dragstrip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 140px;               /* native minimise / maximise / close buttons */
+  height: 40px;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-app-region: drag;
+}
+header,
+[data-wa-pane="rail"] { -webkit-app-region: drag; }
+button, a, input, textarea, select, label, summary,
+[role="button"], [role="tab"], [role="menu"], [role="menuitem"], [role="option"],
+[role="switch"], [role="checkbox"], [role="slider"], [role="dialog"],
+[contenteditable="true"],
+[data-testid="chat-list-search"] { -webkit-app-region: no-drag !important; }
+
+/* Headers that reach the right edge of the window clear the native buttons.
+   preload.js sets the attribute only on headers actually under them, so the
+   gap disappears when a side panel opens beside the conversation. */
+header[data-wa-under-controls] { padding-right: 140px !important; }
+
+/* --- Rail and header accents ------------------------------------------- */
+[data-wa-pane="rail"] {
+  position: relative !important;
+  z-index: 2 !important;
+  isolation: isolate !important;
+  contain: paint !important;
+  box-sizing: border-box !important;
+  min-width: 60px !important;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.72) 0px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.45) 35px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.20) 75px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.06) 120px,
+    rgba(24, 26, 28, 0.85) 170px,
+    rgba(18, 20, 22, 0.94) 100%
+  ) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+[data-wa-pane="rail"] > div,
+[data-wa-pane="rail"] nav {
+  background: transparent !important;
+}
+[data-wa-pane="rail"] [role="button"],
+[data-wa-pane="rail"] button {
+  border-radius: 8px !important;
+  transition: background-color 0.15s ease !important;
+}
+[data-wa-pane="rail"] [role="button"]:hover,
+[data-wa-pane="rail"] button:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
+[data-wa-pane="rail"] [aria-selected="true"],
+[data-wa-pane="rail"] [aria-pressed="true"],
+[data-wa-pane="rail"] [data-navbar-item-selected="true"] {
+  background-color: rgba(var(--wa-accent-rgb, 191, 86, 17), 0.32) !important;
+  box-shadow: inset 0 0 0 1px rgba(var(--wa-accent-rgb, 191, 86, 17), 0.50) !important;
+}
+
+/* Soft accent glow along the top edge of the whole window. */
+#app::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  background: linear-gradient(
+    180deg,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.40) 0px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.15) 16px,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+[data-wa-pane="side"] header,
+#main > header {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.45) 0px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.20) 30px,
+    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.05) 60px,
+    rgba(17, 27, 33, 0.96) 90px,
+    var(--wa-surface, #111b21) 100%
+  ) !important;
+}
+[data-wa-pane="side"] header > div,
+#main > header > div { background: transparent !important; }
+
+/* --- Telegram-style dark theme ------------------------------------------ */
+:root {
+  --background-default: #0e1621 !important;
+  --background-default-hover: #202b36 !important;
+  --background-default-active: #2b5278 !important;
+  --panel-header-background: #17212b !important;
+  --panel-background: #17212b !important;
+  --panel-background-hover: #202b36 !important;
+  --panel-background-active: #2b5278 !important;
+
+  --message-in: #182533 !important;
+  --message-out: #2b5278 !important;
+  --outgoing-background: #2b5278 !important;
+  --incoming-background: #182533 !important;
+
+  --compose-input-background: #17212b !important;
+  --compose-primary: #ffffff !important;
+  --compose-panel-background: #0e1621 !important;
+
+  --teal: #5288c1 !important;
+  --teal-light: #5288c1 !important;
+  --primary: #5288c1 !important;
+  --primary-strong: #5288c1 !important;
+
+  --system-message-background: rgba(23, 33, 43, 0.6) !important;
+  --system-message-text: #8e9bb0 !important;
+}
+
+[data-testid="msg-container"] {
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15) !important;
+}
+
+[data-asset-chat-background-dark] { display: none !important; }
+
+/* WhatsApp already draws the rounded pill around the whole compose row (attach,
+   emoji, input, mic). Giving the input its own background, border and radius
+   nested a second, bluer pill inside it - the odd light-blue bar behind
+   "Type a message". Keep the input flat and let the outer pill do the work. */
+[data-testid="conversation-compose-box-input"] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+footer,
+footer > div,
+[data-testid="compose-box"] { background: transparent !important; border: none !important; }
+
+[data-testid="filter-list"] {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+  background: #17212b !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2) !important;
+}
+[data-testid="filter-list"] button {
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  font-weight: 500 !important;
+}
+[data-testid="filter-list"] button[aria-pressed="true"] {
+  background: #2b5278 !important;
+  color: #fff !important;
+}
+
+[data-wa-pane="side"] [role="row"]:has([aria-selected="true"]) {
+  box-shadow: 0 0 15px rgba(82, 136, 193, 0.15) inset !important;
+  border-left: 3px solid #5288c1 !important;
+  background: #2b5278 !important;
+}
+
+[data-testid="chat-list"] button[title="New chat"] { background-color: #5288c1 !important; }
+
+::-webkit-scrollbar { width: 4px !important; height: 4px !important; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1) !important; border-radius: 4px !important; }
+::-webkit-scrollbar-track { background: transparent !important; }
+
+/* --- Privacy blur (tray toggle) ----------------------------------------- */
+body.privacy-blur-active .message-in,
+body.privacy-blur-active .message-out,
+body.privacy-blur-active [data-testid="chat-list"] img,
+body.privacy-blur-active [data-testid="chat-list"] [dir="ltr"] {
+  filter: blur(5px);
+  transition: filter 0.3s ease;
+}
+body.privacy-blur-active .message-in:hover,
+body.privacy-blur-active .message-out:hover,
+body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover img,
+body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover [dir="ltr"] {
+  filter: blur(0);
+}

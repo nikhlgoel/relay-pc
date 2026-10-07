@@ -5,20 +5,30 @@ process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', 
 
 const {
   app, BrowserWindow, Tray, Menu, shell, session, clipboard,
-  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences
+  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
 const Store = require('electron-store');
 
 const { autoUpdater } = require('electron-updater');
-
+const {
+  isWhatsAppWebUrl, isWhatsAppOwnedUrl, deepLinkToWebUrl, shouldOpenExternally
+} = require('./urls');
 
 // Profile parsing for Multi-Account support
 const profileArgMatch = process.argv.find(arg => arg.startsWith('--profile='));
-const currentProfile = profileArgMatch ? profileArgMatch.split('=')[1] : 'default';
+const currentProfile = ((profileArgMatch ? profileArgMatch.split('=')[1] : '') || 'default')
+  .replace(/[^\w-]/g, '') || 'default';
 const currentPartition = currentProfile === 'default' ? 'persist:whatsapp' : 'persist:whatsapp_' + currentProfile;
+
+// The single-instance lock is keyed on the userData directory. Without a
+// directory of its own, launching "--profile=Work" while the default profile is
+// running just focused the existing window, so multi-account never worked.
+// Must happen before the lock is requested and before the Store is created.
+if (currentProfile !== 'default') {
+  app.setPath('userData', app.getPath('userData') + '-' + currentProfile);
+}
 
 const store = new Store({
   defaults: {
@@ -32,16 +42,27 @@ const store = new Store({
       privacyBlur: false,
     lowPower: true,
     blockTelemetry: true,
-    // Translucent icon rail via Windows 11 acrylic backdrop or system-wide DWM blur
-    translucent: true
+    // Call quality (see preload.js). The camera path costs a canvas copy of
+    // every frame, so both can be switched off.
+    enhanceCamera: true,
+    enhanceMic: true
   }
 });
 
 const WHATSAPP_URL = 'https://web.whatsapp.com/';
+const THEME_CSS = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8');
 
-// A real, current Chrome UA. WhatsApp Web nags about an "unsupported browser"
-// under the default Electron UA.
-const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+// The default Electron UA carries "Electron/x" and the app name, which makes
+// WhatsApp Web nag about an unsupported browser. Build the UA from the Chromium
+// we actually ship: a hard-coded version drifts out of date and contradicts the
+// Sec-CH-UA client hints Chromium sends on its own (it was claiming 128 while
+// the hints said 152).
+const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/' + process.versions.chrome.split('.')[0] + '.0.0.0 Safari/537.36';
+
+function openExternalSafe(url) {
+  if (shouldOpenExternally(url)) shell.openExternal(url);
+}
 
 // Endpoints that exist purely to report on you. None of these carry message
 // traffic, media or presence, so blocking them costs no functionality.
@@ -60,11 +81,15 @@ const TELEMETRY_HOSTS = [
 // costs threads, memory, background fetches, or all three.
 // ---------------------------------------------------------------------------
 function configureRuntime() {
-  // Translucency (Acrylic / Mica / DWM blur) requires GPU compositing to render
-  if (!store.get('hardwareAcceleration') && !store.get('translucent')) {
+  if (!store.get('hardwareAcceleration')) {
     app.disableHardwareAcceleration();
   }
 
+  app.userAgentFallback = CHROME_UA;
+
+  // One call only: appendSwitch replaces the previous value for the same
+  // switch, so a second 'disable-features' call silently discarded this whole
+  // list (only CalculateNativeWinOcclusion survived).
   app.commandLine.appendSwitch('disable-features', [
     'Translate',                        // language detection on every page
     'MediaRouter',                      // Cast device discovery on the LAN
@@ -73,7 +98,8 @@ function configureRuntime() {
     'OptimizationGuideModelDownloading',
     'AutofillServerCommunication',      // form uploads to Google
     'InterestFeedContentSuggestions',
-    'SpareRendererForSitePerProcess'    // a whole idle renderer held in reserve
+    'SpareRendererForSitePerProcess',   // a whole idle renderer held in reserve
+    'CalculateNativeWinOcclusion'       // misreports occlusion for transparent windows
   ].join(','));
 
   app.commandLine.appendSwitch('disable-component-update'); // no background updater
@@ -85,16 +111,8 @@ function configureRuntime() {
   app.commandLine.appendSwitch('disable-sync');
   app.commandLine.appendSwitch('no-pings');
   
-  // Memory and background stability optimizations
-  // Removed disable-site-isolation-trials
-  // Removed process-per-site
-  // Removed js-flags
-  app.commandLine.appendSwitch('disable-background-timer-throttling');
-  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
-  
   app.commandLine.appendSwitch('disk-cache-size', String(96 * 1024 * 1024));
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer,WebRtcApmInAudioService');
 
   // Timers are never throttled: the websocket and its keepalives have to keep
   // running or messages arrive late. Process *priority*, on the other hand, is
@@ -107,7 +125,12 @@ function configureRuntime() {
 }
 
 configureRuntime();
-app.setAppUserModelId('com.whitedev.whatsapppc');
+// Must equal build.appId in package.json (test/appid.test.js checks): that is the
+// AUMID electron-builder stamps on the Start-menu shortcut, and Windows keys
+// toast notifications, taskbar grouping and Jump Lists on it. A different value
+// detaches all three. It is a constant because electron-builder removes the
+// 'build' section from the package.json inside the packaged app.
+app.setAppUserModelId('com.nikhlgoel.relay');
 
 let mainWindow = null;
 let tray = null;
@@ -128,9 +151,9 @@ if (!gotLock) {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     showWindow();
     const url = commandLine.find(arg => arg.startsWith('whatsapp://'));
-    if (url && mainWindow && !mainWindow.isDestroyed()) {
-      const webUrl = url.replace('whatsapp://', 'https://web.whatsapp.com/');
-      mainWindow.loadURL(webUrl, { userAgent: CHROME_UA });
+    const webUrl = url && deepLinkToWebUrl(url);
+    if (webUrl && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadURL(webUrl);
     }
   });
 }
@@ -172,8 +195,19 @@ function getSystemAccent() {
   return { hex: '#bf5611', rgb: '191, 86, 17' };
 }
 
+/** Saved bounds, or defaults if the monitor they were on is gone. Restoring a
+ *  window to a disconnected display leaves it off-screen with no way back. */
+function restorableBounds() {
+  const saved = store.get('bounds');
+  if (typeof saved.x !== 'number' || typeof saved.y !== 'number') return saved;
+  const onScreen = screen.getAllDisplays().some(({ workArea: a }) =>
+    saved.x < a.x + a.width - 80 && saved.x + saved.width > a.x + 80 &&
+    saved.y < a.y + a.height - 40 && saved.y + saved.height > a.y);
+  return onScreen ? saved : { width: saved.width, height: saved.height };
+}
+
 function createWindow() {
-  const bounds = store.get('bounds');
+  const bounds = restorableBounds();
 
   mainWindow = new BrowserWindow({
     ...bounds,
@@ -189,8 +223,10 @@ function createWindow() {
       symbolColor: '#ffffff',
       height: 30
     },
-    transparent: true,
-    backgroundColor: '#00000000',
+    // Not `transparent`: nothing here ever applied a backdrop material, so a
+    // transparent window only forced the slower layered-window path (and
+    // fought Windows' maximize/resize handling) for no visible gain.
+    backgroundColor: '#0e1621',
     title: 'Relay',
     icon: asset('icon.png'),
     webPreferences: {
@@ -211,12 +247,9 @@ function createWindow() {
 
   const ses = mainWindow.webContents.session;
 
-  // Present ourselves as Chrome for every request, including subresources.
+  // Present ourselves as Chrome. The session-level UA covers every request, so
+  // no per-request header hook is needed (it cost an IPC round trip each).
   ses.setUserAgent(CHROME_UA);
-  ses.webRequest.onBeforeSendHeaders((details, cb) => {
-    details.requestHeaders['User-Agent'] = CHROME_UA;
-    cb({ requestHeaders: details.requestHeaders });
-  });
 
   if (store.get('blockTelemetry')) {
     ses.webRequest.onBeforeRequest({ urls: TELEMETRY_HOSTS },
@@ -232,29 +265,43 @@ function createWindow() {
   const ALLOWED_PERMISSIONS = [
     'notifications', 'media', 'mediaKeySystem', 'display-capture',
     'clipboard-read', 'clipboard-sanitized-write', 'fullscreen',
-    'speaker-selection', 'microphone', 'camera'
+    'speaker-selection', 'microphone', 'camera', 'persistent-storage'
   ];
 
-  // Grant permissions for calls, camera, microphone, notifications, and clipboard
-  ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(ALLOWED_PERMISSIONS.includes(permission));
+  // Only WhatsApp itself gets hardware and storage permissions. The handlers
+  // used to say yes to every origin, including any frame or window the page
+  // could open.
+  const isTrusted = (url) => isWhatsAppWebUrl(url);
+  const debugPerms = Boolean(process.env.RELAY_DEBUG_PERMS);
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const url = (details && details.requestingUrl) || wc.getURL();
+    if (debugPerms) console.log('[perm] request', permission, url);
+    callback(ALLOWED_PERMISSIONS.includes(permission) && isTrusted(url));
   });
 
-  // Handle permission queries (e.g. navigator.permissions.query) for camera & mic
-  ses.setPermissionCheckHandler((_wc, permission) => {
-    return ALLOWED_PERMISSIONS.includes(permission);
+  // Permission queries (navigator.permissions.query) for camera & mic
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+    if (debugPerms) console.log('[perm] check', permission, requestingOrigin);
+    return ALLOWED_PERMISSIONS.includes(permission) &&
+      isTrusted(requestingOrigin || wc.getURL());
   });
 
   // Allow enumerating and selecting audio/video hardware devices
-  ses.setDevicePermissionHandler(() => true);
+  ses.setDevicePermissionHandler((details) => isTrusted(details.origin));
 
-  
+  // Screen sharing in calls. Without a handler getDisplayMedia is rejected.
+  ses.setDisplayMediaRequestHandler(pickDisplaySource, { useSystemPicker: false });
+
+  // Theme + layout styling lives in theme.css and is re-injected on every load.
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow.webContents.insertCSS(THEME_CSS).catch(() => {});
+  });
+
   let initialUrl = WHATSAPP_URL;
   const deepLinkArg = process.argv.find(arg => arg.startsWith('whatsapp://'));
-  if (deepLinkArg) {
-    initialUrl = deepLinkArg.replace('whatsapp://', 'https://web.whatsapp.com/');
-  }
-  mainWindow.loadURL(initialUrl, { userAgent: CHROME_UA });
+  const deepLinkUrl = deepLinkArg && deepLinkToWebUrl(deepLinkArg);
+  if (deepLinkUrl) initialUrl = deepLinkUrl;
+  mainWindow.loadURL(initialUrl);
 
 
   mainWindow.once('ready-to-show', () => {
@@ -270,29 +317,47 @@ function createWindow() {
   }, 1500);
 
   // Open real links in the user's browser, never in an app window.
+  // The old check was url.includes('whatsapp.com'), which also matched
+  // 'https://evil.example/?whatsapp.com' and gave that page an app window that
+  // inherits our preload.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.includes('whatsapp.com') || url === 'about:blank' || url.startsWith('blob:')) {
+    if (url === 'about:blank' || url.startsWith('blob:') || isWhatsAppOwnedUrl(url)) {
       return { action: 'allow' };
     }
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
 
   mainWindow.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith('https://web.whatsapp.com')) {
+    if (!isWhatsAppWebUrl(url)) {
       e.preventDefault();
-      shell.openExternal(url);
+      openExternalSafe(url);
     }
   });
 
-  // If the renderer ever dies, reload instead of showing a white window.
+  // If the renderer ever dies, reload instead of showing a white window, but
+  // give up after a few crashes in quick succession rather than spinning.
+  const crashTimes = [];
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
-    if (details.reason !== 'clean-exit') mainWindow.reload();
+    if (details.reason === 'clean-exit' || !mainWindow) return;
+    const now = Date.now();
+    crashTimes.push(now);
+    while (crashTimes.length && now - crashTimes[0] > 60000) crashTimes.shift();
+    if (crashTimes.length > 3) {
+      console.error('Renderer crashed repeatedly; not reloading again.', details.reason);
+      return;
+    }
+    setTimeout(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.reload(), 500 * crashTimes.length);
   });
 
+  // Offline at launch (or a DNS blip): retry with a growing delay, and stop
+  // hammering once the page loads.
+  let loadRetries = 0;
+  mainWindow.webContents.on('did-finish-load', () => { loadRetries = 0; });
   mainWindow.webContents.on('did-fail-load', (_e, code, _desc, _url, isMain) => {
     if (isMain && code !== -3) {
-      setTimeout(() => mainWindow && mainWindow.loadURL(WHATSAPP_URL), 3000);
+      const delay = Math.min(3000 * 2 ** loadRetries++, 60000);
+      setTimeout(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.loadURL(WHATSAPP_URL), delay);
     }
   });
 
@@ -364,6 +429,21 @@ function createWindow() {
     setTimeout(triggerLayoutRefresh, 250);
   });
 
+  // After a stretch in the tray, collect garbage once. WhatsApp's renderer
+  // holds a lot of short-lived objects from the last session of use; V8 would
+  // otherwise keep them until the next major GC, which is whenever you return
+  // - right when you want the UI snappy. Once, hidden, and never while visible.
+  let trimTimer = null;
+  mainWindow.on('hide', () => {
+    clearTimeout(trimTimer);
+    trimTimer = setTimeout(trimRendererMemory, 90 * 1000);
+  });
+  mainWindow.on('show', () => clearTimeout(trimTimer));
+
+  // Windows is logging off / shutting down. Vetoing 'close' here makes the OS
+  // report that the app is blocking shutdown.
+  mainWindow.on('session-end', () => { isQuitting = true; });
+
   mainWindow.on('close', (e) => {
     if (!isQuitting && store.get('minimizeToTray')) {
       e.preventDefault();
@@ -372,6 +452,65 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+/** Ask which screen or window to share, then hand it to getDisplayMedia. */
+async function pickDisplaySource(request, callback) {
+  if (!isWhatsAppWebUrl(request.securityOrigin) || !mainWindow) return callback({});
+  let sources;
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 64, height: 36 },
+      fetchWindowIcons: false
+    });
+  } catch (err) {
+    console.error('Screen share: could not list sources', err);
+    return callback({});
+  }
+  // Sharing Relay itself just shows a mirror of the call.
+  sources = sources.filter((s) => s.id !== mainWindow.getMediaSourceId());
+  if (!sources.length) return callback({});
+
+  let done = false;
+  const finish = (result) => { if (!done) { done = true; callback(result); } };
+  const label = (s) => (s.id.startsWith('screen:') ? 'Screen: ' : 'Window: ') +
+    (s.name.length > 60 ? s.name.slice(0, 57) + '...' : s.name);
+
+  Menu.buildFromTemplate([
+    { label: 'Share your screen or a window', enabled: false },
+    { type: 'separator' },
+    ...sources.map((s) => ({
+      label: label(s),
+      icon: s.thumbnail.isEmpty() ? undefined : s.thumbnail,
+      click: () => finish({
+        video: s,
+        // System audio can only be captured along with a whole screen.
+        ...(request.audioRequested && s.id.startsWith('screen:') ? { audio: 'loopback' } : {})
+      })
+    })),
+    { type: 'separator' },
+    { label: 'Cancel', click: () => finish({}) }
+  ]).popup({
+    window: mainWindow,
+    // The item's click handler may run just after the menu closes.
+    callback: () => setTimeout(() => finish({}), 250)
+  });
+}
+
+async function trimRendererMemory() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
+  const dbg = mainWindow.webContents.debugger;
+  // Another debugger (--remote-debugging / DevTools) may already own it.
+  if (dbg.isAttached()) return;
+  try {
+    dbg.attach('1.3');
+    await dbg.sendCommand('HeapProfiler.collectGarbage');
+  } catch (err) {
+    console.warn('Memory trim skipped:', err && err.message);
+  } finally {
+    try { dbg.detach(); } catch {}
+  }
 }
 
 function showContextMenu(ses, params) {
@@ -455,19 +594,40 @@ function toggleWindow() {
   }
 }
 
+function mediaPrefs() {
+  return { video: store.get('enhanceCamera'), audio: store.get('enhanceMic') };
+}
+
+/** Push the call-quality toggles into the page; they apply to the next call. */
+function pushMediaPrefs() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents
+    .executeJavaScript('window.__waMedia = ' + JSON.stringify(mediaPrefs()))
+    .catch(() => {});
+}
+
 /** A tray checkbox bound to a store key, with an optional restart nudge. */
-function toggle(label, key, restart) {
+function toggle(label, key, restart, after) {
   return {
     label,
     type: 'checkbox',
     checked: store.get(key),
     click: (item) => {
       store.set(key, item.checked);
+      if (after) after();
       refreshTrayMenu();
       if (restart) {
         dialog.showMessageBox({
           type: 'info',
-          message: 'Restart WhatsApp for this to take effect.'
+          buttons: ['Restart now', 'Later'],
+          defaultId: 0,
+          cancelId: 1,
+          message: 'Restart Relay for this to take effect.'
+        }).then(({ response }) => {
+          if (response !== 0) return;
+          isQuitting = true;
+          app.relaunch();
+          app.quit();
         });
       }
     }
@@ -491,7 +651,8 @@ function refreshTrayMenu() {
     toggle('Hardware acceleration', 'hardwareAcceleration', true),
     toggle('Low power when hidden', 'lowPower', true),
     toggle('Block telemetry', 'blockTelemetry', true),
-    toggle('Translucent sidebar', 'translucent', true),
+    toggle('Enhance camera in calls', 'enhanceCamera', false, pushMediaPrefs),
+    toggle('Enhance microphone in calls', 'enhanceMic', false, pushMediaPrefs),
       toggle('Privacy Blur', 'privacyBlur', true),
     { label: 'Resource usage…', click: showResourceUsage },
     { type: 'separator' },
@@ -588,116 +749,37 @@ function zoom(delta, reset) {
 // ---------------------------------------------------------------------------
 // Renderer bridge
 // ---------------------------------------------------------------------------
-ipcMain.on('unread-count', (_e, count) => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const n = Number(count) || 0;
-  mainWindow.setOverlayIcon(n > 0 ? badgeIcon(n) : null, n > 0 ? n + ' unread' : '');
-  if (tray) tray.setToolTip(n > 0 ? 'WhatsApp — ' + n + ' unread' : 'Relay');
+/** IPC is only honoured from WhatsApp's own top-level page. */
+function fromWhatsApp(e) {
+  return Boolean(e.senderFrame) && isWhatsAppWebUrl(e.senderFrame.url);
+}
+
+const on = (channel, fn) => ipcMain.on(channel, (e, ...a) => { if (fromWhatsApp(e)) fn(e, ...a); });
+const handle = (channel, fn) => ipcMain.handle(channel, (e, ...a) => {
+  if (!fromWhatsApp(e)) throw new Error('Untrusted sender for ' + channel);
+  return fn(e, ...a);
 });
 
-ipcMain.on('activate-window', () => showWindow());
+on('unread-count', (_e, count) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  mainWindow.setOverlayIcon(n > 0 ? badgeIcon(n) : null, n > 0 ? n + ' unread' : '');
+  if (tray) tray.setToolTip(n > 0 ? 'Relay — ' + n + ' unread' : 'Relay');
+});
 
-  ipcMain.on('flash-window', () => {
-    if (mainWindow && !mainWindow.isFocused()) {
-      mainWindow.flashFrame(true);
-    }
-  });
+on('activate-window', () => showWindow());
 
-ipcMain.on('dom-debug', (_e, data) => {
-  try {
-    fs.writeFileSync(path.join(__dirname, '..', 'dom-debug.json'), JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error('Failed to write dom-debug.json', err);
+on('flash-window', () => {
+  if (mainWindow && !mainWindow.isFocused()) {
+    mainWindow.flashFrame(true);
   }
 });
-ipcMain.handle('pane-width:get', () => store.get('paneWidth'));
-ipcMain.handle('translucent:get', () => store.get('translucent'));
-ipcMain.handle('privacyBlur:get', () => store.get('privacyBlur'));
-ipcMain.handle('system:accent-color', () => getSystemAccent());
-ipcMain.on('pane-width:set', (_e, px) => store.set('paneWidth', Number(px) || 0));
 
-function getMimeType(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  const mimeMap = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.bmp': 'image/bmp',
-    '.svg': 'image/svg+xml',
-    '.mp4': 'video/mp4',
-    '.mov': 'video/quicktime',
-    '.m4v': 'video/x-m4v',
-    '.3gp': 'video/3gpp',
-    '.webm': 'video/webm',
-    '.mkv': 'video/x-matroska',
-    '.avi': 'video/x-msvideo',
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.ogg': 'audio/ogg',
-    '.m4a': 'audio/mp4',
-    '.pdf': 'application/pdf',
-    '.zip': 'application/zip',
-    '.rar': 'application/x-rar-compressed',
-    '.7z': 'application/x-7z-compressed',
-    '.tar': 'application/x-tar',
-    '.gz': 'application/gzip',
-    '.txt': 'text/plain',
-    '.csv': 'text/csv',
-    '.json': 'application/json',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xls': 'application/vnd.ms-excel',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.ppt': 'application/vnd.ms-powerpoint',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-  };
-  return mimeMap[ext] || 'application/octet-stream';
-}
-
-function getClipboardExePath() {
-  const unpackedPath = path.join(__dirname, 'assets', 'get_clipboard_files.exe').replace('app.asar', 'app.asar.unpacked');
-  if (fs.existsSync(unpackedPath)) return unpackedPath;
-  const directPath = path.join(__dirname, 'assets', 'get_clipboard_files.exe');
-  if (fs.existsSync(directPath)) return directPath;
-  return null;
-}
-
-function getNativeClipboardFiles() {
-  return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-Command', '(Get-Clipboard -Format FileDropList).FullName'], { windowsHide: true, timeout: 2000 }, (err, stdout) => {
-      if (err || !stdout) return resolve([]);
-      const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      const files = [];
-      for (const filePath of lines) {
-        try {
-          if (fs.existsSync(filePath)) {
-            const stat = fs.statSync(filePath);
-            // Prevent loading insanely huge files into memory which would crash the IPC/renderer
-            if (stat.isFile() && stat.size < 100 * 1024 * 1024) {
-              files.push({
-                name: path.basename(filePath),
-                path: filePath,
-                size: stat.size,
-                lastModified: stat.mtimeMs,
-                mimeType: getMimeType(filePath),
-                buffer: fs.readFileSync(filePath)
-              });
-            }
-          }
-        } catch (e) {
-          console.error('Error reading clipboard file:', filePath, e);
-        }
-      }
-      resolve(files);
-    });
-  });
-}
-
-ipcMain.handle('clipboard:get-files', async () => {
-  return await getNativeClipboardFiles();
-});
+handle('pane-width:get', () => store.get('paneWidth'));
+handle('privacyBlur:get', () => store.get('privacyBlur'));
+handle('media:prefs', () => mediaPrefs());
+handle('system:accent-color', () => getSystemAccent());
+on('pane-width:set', (_e, px) => store.set('paneWidth', Math.max(0, Math.min(4000, Number(px) || 0))));
 
 function badgeIcon(n) {
   const text = n > 99 ? '99+' : String(n);
@@ -738,8 +820,12 @@ app.whenReady().then(() => {
     ]);
   }
   
-  // Auto-updater setup
-  autoUpdater.checkForUpdatesAndNotify();
+  // Auto-updater: only meaningful for an installed build. The portable target
+  // cannot self-update, and in dev there is no update feed to read.
+  if (app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE) {
+    autoUpdater.on('error', (err) => console.error('Auto-update failed:', err && err.message));
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  }
 
   if (process.platform === 'win32' && systemPreferences && systemPreferences.on) {
     try {
