@@ -5,7 +5,7 @@
   "description": "Relay - a native Windows desktop client for WhatsApp",
   "productName": "Relay",
   "main": "src/main.js",
-  "author": "white.dev.sc",
+  "author": "nikhlgoel",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -67,7 +67,7 @@
     "portable": {
       "artifactName": "Relay-portable-${version}.exe"
     },
-    "copyright": "Copyright (c) 2026 white.dev.sc"
+    "copyright": "Copyright (c) 2026 nikhlgoel"
   },
   "overrides": {
     "@electron/get": "^5.1.0"

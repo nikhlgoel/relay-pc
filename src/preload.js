@@ -402,9 +402,11 @@ async function setupLayout() {
   let observedRow = null;
   const rowObserver = new MutationObserver(refresh);
   const tick = () => {
+    reportCallState();                 // also while hidden: the screen-awake lock must be released
     if (document.hidden) return;
     refresh();
     installCallFullscreenButton();
+    syncSharePreview();
     if (panes && panes.row !== observedRow) {
       rowObserver.disconnect();
       rowObserver.observe(panes.row, { childList: true });
@@ -447,6 +449,88 @@ function syncFullscreenButton(panel) {
   if (title) title.textContent = on ? 'exit-full-screen' : 'full-screen';
 }
 
+// ---------------------------------------------------------------------------
+// Screen sharing: hide your own shared-screen preview.
+//
+// Sharing the whole screen shows the call window inside the call window inside
+// the call window, forever - a big live canvas that does nothing but cost
+// rendering. While you are sharing, the big preview is hidden and a toolbar
+// button (eye) brings it back. Hidden is the default.
+// ---------------------------------------------------------------------------
+const EYE_ON = 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z';
+const EYE_OFF = 'M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.82l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.74-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z';
+const hiddenPreviews = new WeakSet();
+
+function sharePreviewHidden() {
+  try { return window.localStorage.getItem('relay.showSharePreview') !== '1'; } catch { return true; }
+}
+
+function syncSharePreview() {
+  const panel = document.querySelector('[data-testid="move_resize_component"]');
+  if (!panel) return;
+  const sharing = Boolean(panel.querySelector('button[aria-label*="Stop sharing" i]'));
+  const slot = panel.querySelector('[data-relay-share]');
+
+  // The preview is the large, screen-shaped picture; the small tiles stay.
+  const preview = [...panel.querySelectorAll('canvas')]
+    .filter((c) => c.width >= 300 && c.width / c.height > 1.3)
+    .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+
+  if (!sharing) {
+    if (slot) slot.remove();
+    if (preview && hiddenPreviews.has(preview)) { preview.style.display = ''; hiddenPreviews.delete(preview); }
+    return;
+  }
+
+  if (!slot) {
+    const more = [...panel.querySelectorAll('button[aria-label]')]
+      .find((b) => /^more options$/i.test(b.getAttribute('aria-label')));
+    if (more) {
+      let wrapper = more;
+      while (wrapper.parentElement && wrapper.parentElement.children.length === 1) wrapper = wrapper.parentElement;
+      if (wrapper.parentElement) {
+        const clone = wrapper.cloneNode(true);
+        clone.dataset.relayShare = '';
+        const btn = clone.querySelector('button');
+        btn.removeAttribute('aria-expanded');
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try { window.localStorage.setItem('relay.showSharePreview', sharePreviewHidden() ? '1' : '0'); } catch {}
+          syncSharePreview();
+        });
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        wrapper.parentElement.insertBefore(clone, wrapper);
+      }
+    }
+  }
+
+  const hidden = sharePreviewHidden();
+  if (preview) {
+    preview.style.display = hidden ? 'none' : '';
+    if (hidden) hiddenPreviews.add(preview); else hiddenPreviews.delete(preview);
+  }
+  const btn = panel.querySelector('[data-relay-share] button');
+  if (btn) {
+    btn.setAttribute('aria-label', hidden ? 'Show my shared screen' : 'Hide my shared screen');
+    btn.title = btn.getAttribute('aria-label');
+    const path = btn.querySelector('svg path');
+    if (path) path.setAttribute('d', hidden ? EYE_OFF : EYE_ON);
+    const title = btn.querySelector('svg title');
+    if (title) title.textContent = hidden ? 'show-shared-screen' : 'hide-shared-screen';
+  }
+}
+
+let lastCallState = false;
+/** Tell the main process whether a call window is open (keeps the screen awake). */
+function reportCallState() {
+  const active = Boolean(document.querySelector('[data-testid="move_resize_component"]'));
+  if (active !== lastCallState) {
+    lastCallState = active;
+    ipcRenderer.send('call-state', active);
+  }
+}
+
 function installCallFullscreenButton() {
   const panel = document.querySelector('[data-testid="move_resize_component"]');
   if (!panel) return;
@@ -482,6 +566,333 @@ function installCallFullscreenButton() {
   btn.addEventListener('pointerdown', (e) => e.stopPropagation());
   slot.insertBefore(clone, wrapper);
   syncFullscreenButton(panel);
+}
+
+// ===========================================================================
+// Call recording.
+//
+// Runs in the page's own world (it has to see WhatsApp's audio nodes). What goes
+// into the file:
+//   video  the call picture, composed on a 1280x720 canvas: the largest picture
+//          in the call window full size, your own preview in the corner. Each
+//          source canvas is read through captureStream(), which works even though
+//          WhatsApp renders them from a background worker.
+//   audio  your microphone (Relay's processed track) mixed with whatever
+//          WhatsApp sends to the speakers. WhatsApp's call audio is plain Web
+//          Audio, so nodes that feed an output are remembered and, while
+//          recording, also fed to a capture destination. Nothing changes for the
+//          listener.
+// The file is written to disk as it is recorded (a chunk every 2 s through the
+// main process), so a crash loses seconds, and it is closed automatically when
+// the call window goes away. A one-time consent notice is shown by the main
+// process before the first recording.
+// ===========================================================================
+function hookCallRecording() {
+  function pageWorld() {
+    if (window.__relayRec) return;
+    window.__relayRec = true;
+    const post = (msg, transfer) => window.postMessage(Object.assign({ relay: 'rec' }, msg), '*', transfer || []);
+
+    // ---- remote audio tap ----------------------------------------------
+    const sources = [];                         // WeakRef<AudioNode> feeding an output
+    let tap = null;                             // { dests: Map<AudioContext, destination>, onNew } while recording
+    const origConnect = AudioNode.prototype.connect;
+
+    function tapNode(node) {
+      if (!tap) return;
+      const ctx = node.context;
+      let d = tap.dests.get(ctx);
+      if (!d) {
+        d = ctx.createMediaStreamDestination();
+        d.__relayTap = true;
+        tap.dests.set(ctx, d);
+        tap.onNew(d);
+      }
+      try { origConnect.call(node, d); } catch (e) { /* node already gone */ }
+    }
+
+    AudioNode.prototype.connect = function (dest) {
+      const result = origConnect.apply(this, arguments);
+      try {
+        const isOutput = dest instanceof AudioDestinationNode ||
+          (dest instanceof MediaStreamAudioDestinationNode && !dest.__relayTap);
+        // Relay's own microphone processing also ends in a stream destination.
+        if (isOutput && !window.__relayBuildingAudio && !this.__relayOwn) {
+          sources.push(new WeakRef(this));
+          tapNode(this);
+        }
+      } catch (e) { /* never break WhatsApp's audio */ }
+      return result;
+    };
+
+    function startTap(onNew) {
+      tap = { dests: new Map(), onNew };
+      for (let i = sources.length - 1; i >= 0; i--) {
+        const n = sources[i].deref();
+        if (!n) sources.splice(i, 1); else tapNode(n);
+      }
+    }
+
+    function stopTap() {
+      if (!tap) return;
+      for (const [ctx, d] of tap.dests) {
+        for (const ref of sources) {
+          const n = ref.deref();
+          if (n && n.context === ctx) { try { n.disconnect(d); } catch (e) { /* ignore */ } }
+        }
+      }
+      tap = null;
+    }
+
+    // ---- picture ---------------------------------------------------------
+    const W = 1280, H = 720;
+    const out = document.createElement('canvas');
+    out.width = W;
+    out.height = H;
+    const g = out.getContext('2d', { alpha: false });
+    const feeds = new Map();                    // source canvas -> hidden <video>
+
+    const panelEl = () => document.querySelector('[data-testid="move_resize_component"]');
+    const callCanvases = (panel) => [...panel.querySelectorAll('canvas')]
+      .filter((c) => c.width >= 100 && c.height >= 56)       // the level meters are 200x24
+      .sort((a, b) => b.width * b.height - a.width * a.height);
+
+    function feed(canvas) {
+      let v = feeds.get(canvas);
+      if (!v) {
+        v = document.createElement('video');
+        v.muted = true;
+        v.playsInline = true;
+        try {
+          v.srcObject = canvas.captureStream(24);
+          v.play().catch(() => {});
+        } catch (e) { return null; }
+        feeds.set(canvas, v);
+      }
+      return v;
+    }
+
+    function fit(v, x, y, w, h) {
+      const vw = v.videoWidth, vh = v.videoHeight;
+      if (!vw || !vh) return;
+      const s = Math.min(w / vw, h / vh);
+      g.drawImage(v, x + (w - vw * s) / 2, y + (h - vh * s) / 2, vw * s, vh * s);
+    }
+
+    function composeFrame() {
+      g.fillStyle = '#0b141a';
+      g.fillRect(0, 0, W, H);
+      const panel = panelEl();
+      if (!panel) return;
+      const list = callCanvases(panel);
+      for (const [c, v] of feeds) {
+        if (!list.includes(c)) { v.srcObject = null; feeds.delete(c); }
+      }
+      const main = list[0];
+      const pip = list.slice(1).find((c) => c.width / c.height > 1.3);
+      if (main) { const v = feed(main); if (v) fit(v, 0, 0, W, H); }
+      if (pip) {
+        const v = feed(pip);
+        if (v && v.videoWidth) {
+          const pw = Math.round(W * 0.22);
+          const ph = Math.round(pw * v.videoHeight / v.videoWidth);
+          const px = W - pw - 24, py = H - ph - 24;
+          g.fillStyle = '#000';
+          g.fillRect(px - 2, py - 2, pw + 4, ph + 4);
+          g.drawImage(v, px, py, pw, ph);
+        }
+      }
+    }
+
+    // ---- sound -----------------------------------------------------------
+    function buildAudio() {
+      const ctx = new AudioContext();
+      const dest = ctx.createMediaStreamDestination();
+      dest.__relayTap = true;
+      const add = (stream) => {
+        if (!stream.getAudioTracks().length) return;
+        const s = ctx.createMediaStreamSource(stream);
+        s.__relayOwn = true;
+        s.connect(dest);
+      };
+      window.__relayBuildingAudio = true;
+      try {
+        const mic = window.__relayMicTrack;
+        if (mic && mic.readyState === 'live') add(new MediaStream([mic]));
+        startTap((d) => add(d.stream));
+      } finally { window.__relayBuildingAudio = false; }
+      return { ctx, dest };
+    }
+
+    // ---- main process handshake ------------------------------------------
+    let pending = null;
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || !e.data) return;
+      if (e.data.relay === 'rec-reply' && pending) { const p = pending; pending = null; p(e.data); }
+      if (e.data.relay === 'rec-cmd' && e.data.cmd === 'stop') stop();
+    });
+    const ask = (msg) => new Promise((resolve) => {
+      pending = resolve;
+      post(msg);
+      setTimeout(() => { if (pending === resolve) { pending = null; resolve(null); } }, 180000);
+    });
+
+    // ---- recorder --------------------------------------------------------
+    const state = { active: false, id: null, rec: null, audio: null, frameTimer: null, startedAt: 0, queue: Promise.resolve() };
+
+    async function start(auto) {
+      if (state.active) return;
+      const panel = panelEl();
+      if (!panel) return;
+      const hasVideo = callCanvases(panel).length > 0;
+      const candidates = hasVideo
+        ? ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm;codecs=vp9,opus', 'video/webm']
+        : ['audio/mp4;codecs=mp4a.40.2', 'audio/webm;codecs=opus', 'audio/webm'];
+      const mime = candidates.find((m) => MediaRecorder.isTypeSupported(m));
+      if (!mime) return;
+      const ext = mime.indexOf('mp4') >= 0 ? (hasVideo ? 'mp4' : 'm4a') : 'webm';
+
+      const reply = await ask({ type: 'open', ext, video: hasVideo, auto: Boolean(auto) });
+      if (!reply || !reply.ok) return;
+
+      state.id = reply.id;
+      state.audio = buildAudio();
+      let stream;
+      if (hasVideo) {
+        stream = out.captureStream(24);
+        state.audio.dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
+        state.frameTimer = setInterval(composeFrame, 1000 / 24);
+        composeFrame();
+      } else {
+        stream = state.audio.dest.stream;
+      }
+      const rec = new MediaRecorder(stream, hasVideo
+        ? { mimeType: mime, videoBitsPerSecond: 3000000, audioBitsPerSecond: 128000 }
+        : { mimeType: mime, audioBitsPerSecond: 128000 });
+      const id = state.id;
+      state.queue = Promise.resolve();
+      rec.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        state.queue = state.queue
+          .then(() => e.data.arrayBuffer())
+          .then((buf) => post({ type: 'chunk', id, buf }, [buf]));
+      };
+      rec.onstop = () => { state.queue = state.queue.then(() => post({ type: 'close', id })); };
+      rec.start(2000);
+      state.rec = rec;
+      state.startedAt = Date.now();
+      state.active = true;
+      updateButton();
+    }
+
+    function stop() {
+      if (!state.active) return;
+      state.active = false;
+      clearInterval(state.frameTimer);
+      try { state.rec.stop(); } catch (e) { /* already stopped */ }
+      stopTap();
+      try { state.audio.ctx.close(); } catch (e) { /* ignore */ }
+      for (const v of feeds.values()) v.srcObject = null;
+      feeds.clear();
+      updateButton();
+    }
+
+    // ---- toolbar button --------------------------------------------------
+    const DOT = 'M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z';
+    const SQUARE = 'M7 7h10v10H7z';
+
+    function ensureButton(panel) {
+      if (panel.querySelector('[data-relay-rec]')) return;
+      const more = [...panel.querySelectorAll('button[aria-label]')]
+        .find((b) => /^more options$/i.test(b.getAttribute('aria-label')));
+      if (!more) return;
+      let wrapper = more;
+      while (wrapper.parentElement && wrapper.parentElement.children.length === 1) wrapper = wrapper.parentElement;
+      if (!wrapper.parentElement) return;
+      const clone = wrapper.cloneNode(true);
+      clone.dataset.relayRec = '';
+      const btn = clone.querySelector('button');
+      btn.removeAttribute('aria-expanded');
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (state.active) stop(); else start(false);
+      });
+      btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      wrapper.parentElement.insertBefore(clone, wrapper);
+      updateButton();
+    }
+
+    function updateButton() {
+      const btn = document.querySelector('[data-relay-rec] button');
+      if (!btn) return;
+      const on = state.active;
+      const secs = on ? Math.floor((Date.now() - state.startedAt) / 1000) : 0;
+      const t = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      btn.setAttribute('aria-label', on ? 'Stop recording (' + t + ')' : 'Record call');
+      btn.title = btn.getAttribute('aria-label');
+      const svg = btn.querySelector('svg');
+      const path = btn.querySelector('svg path');
+      if (path) path.setAttribute('d', on ? SQUARE : DOT);
+      if (svg) {
+        svg.style.color = on ? '#ff5a5f' : '';
+        const title = svg.querySelector('title');
+        if (title) title.textContent = on ? 'stop-recording' : 'record-call';
+      }
+    }
+
+    // ---- housekeeping ----------------------------------------------------
+    let missing = 0, lastPanel = null, autoDone = false;
+    setInterval(() => {
+      const panel = panelEl();
+      if (panel) ensureButton(panel);
+      if (state.active) updateButton();
+
+      // The call window is gone: finish and save, whether or not anyone pressed stop.
+      if (state.active && !panel) { if (++missing >= 3) stop(); } else missing = 0;
+
+      if (panel !== lastPanel) { lastPanel = panel; autoDone = false; }
+      const prefs = window.__waMedia || {};
+      if (panel && prefs.autoRecord && !state.active && !autoDone &&
+          panel.querySelector('button[aria-label*="Mute microphone" i], button[aria-label*="Unmute microphone" i]') &&
+          [...panel.querySelectorAll('[aria-label]')].some((e) => /end-to-end/i.test(e.getAttribute('aria-label')))) {
+        autoDone = true;                       // once per call, even if it fails or is stopped
+        start(true);
+      }
+    }, 500);
+
+    window.__relayRec = { start, stop, get active() { return state.active; } };
+  }
+
+  try {
+    webFrame.executeJavaScript('(' + pageWorld.toString() + ')();');
+  } catch (err) {
+    console.warn('[Recording] injection failed:', err);
+  }
+
+  // The page world cannot reach Electron, so it posts messages; this side
+  // forwards them to the main process (and the replies back).
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.relay !== 'rec') return;
+    const m = e.data;
+    if (m.type === 'open') {
+      ipcRenderer.invoke('recording:open', { ext: m.ext, video: m.video, auto: m.auto })
+        .then((r) => window.postMessage(Object.assign({ relay: 'rec-reply' }, r), '*'))
+        .catch(() => window.postMessage({ relay: 'rec-reply', ok: false }, '*'));
+    } else if (m.type === 'chunk') {
+      ipcRenderer.send('recording:chunk', m.id, m.buf);
+    } else if (m.type === 'close') {
+      ipcRenderer.send('recording:close', m.id);
+    }
+  });
+  // Quitting with a recording running: stop it so the file is complete.
+  ipcRenderer.on('recording:flush', () => window.postMessage({ relay: 'rec-cmd', cmd: 'stop' }, '*'));
+}
+
+try {
+  hookCallRecording();
+} catch (e) {
+  console.warn('hookCallRecording error:', e);
 }
 
 // ===========================================================================
@@ -599,12 +1010,18 @@ function hookMediaDevices() {
       limiter.release.value = 0.05;
 
       const dest = ctx.createMediaStreamDestination();
-      src.connect(highpass);
-      highpass.connect(presence);
-      presence.connect(compressor);
-      compressor.connect(makeup);
-      makeup.connect(limiter);
-      limiter.connect(dest);
+      // Tell the call recorder this plumbing is Relay's own, not call audio.
+      window.__relayBuildingAudio = true;
+      try {
+        src.connect(highpass);
+        highpass.connect(presence);
+        presence.connect(compressor);
+        compressor.connect(makeup);
+        makeup.connect(limiter);
+        limiter.connect(dest);
+      } finally {
+        window.__relayBuildingAudio = false;
+      }
 
       chains++;
       const out = dest.stream.getAudioTracks()[0];
@@ -988,6 +1405,9 @@ function hookMediaDevices() {
 
       const stream = await origGetUserMedia(next);
       if (p.audio) for (const t of stream.getAudioTracks()) swap(stream, t, enhanceAudioTrack);
+      // Remember the live microphone so a call recording can mix it in.
+      const micTrack = stream.getAudioTracks()[0];
+      if (micTrack) window.__relayMicTrack = micTrack;
       if (p.video) {
         for (const t of stream.getVideoTracks()) {
           await resetStaleCameraSettings(t);
@@ -1025,8 +1445,8 @@ try {
 // Page world, polled from the very start: WhatsApp's module loader appears a
 // moment into boot and the flag must be patched before the call UI is built.
 // ===========================================================================
-function enableWebCalling() {
-  function pageWorld() {
+function enableWebCalling(lazyEngine) {
+  function pageWorld(opts) {
     if (window.__relayCalling) return;
     window.__relayCalling = true;
     let tries = 0;
@@ -1042,6 +1462,8 @@ function enableWebCalling() {
           const original = AB.getABPropConfigValue;
           AB.getABPropConfigValue = function (key) {
             if (key === 'enable_web_calling') return true;
+            // Boot the call engine on the first call, not at launch (idle memory).
+            if (opts.lazyEngine && key === 'web_voip_deferred_boot_init') return true;
             // 0 = the control group: no "get the desktop app" empty-state banner.
             if (key === 'wa_web_growth_empty_state_upsell_variant_m1') return 0;
             return original.apply(this, arguments);
@@ -1064,14 +1486,15 @@ function enableWebCalling() {
     }, 250);
   }
   try {
-    webFrame.executeJavaScript('(' + pageWorld.toString() + ')();');
+    webFrame.executeJavaScript('(' + pageWorld.toString() + ')(' + JSON.stringify({ lazyEngine }) + ');');
   } catch (err) {
     console.warn('[Calls] flag patch failed:', err);
   }
 }
 
 try {
-  if (ipcRenderer.sendSync('features:get').calling) enableWebCalling();
+  const features = ipcRenderer.sendSync('features:get');
+  if (features.calling) enableWebCalling(Boolean(features.lazyEngine));
 } catch (e) {
   console.warn('features:get failed:', e);
 }
@@ -1082,7 +1505,8 @@ try {
 ipcRenderer.invoke('media:prefs')
   .then((p) => webFrame.executeJavaScript('window.__waMedia = ' + JSON.stringify({
     video: Boolean(p && p.video),
-    audio: Boolean(p && p.audio)
+    audio: Boolean(p && p.audio),
+    autoRecord: Boolean(p && p.autoRecord)
   })))
   .catch(() => {});
 

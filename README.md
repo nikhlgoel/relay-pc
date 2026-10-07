@@ -11,6 +11,10 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Native notifications; clicking one brings the window forward
 - Unread badge on the taskbar icon
 - Voice and video calls with screen sharing and a full-screen button on the call window. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
+- Call recording to `Videos/WA` (button in the call toolbar, or automatic; saved as it goes and closed when the call ends)
+- Screen sharing: hide your own shared-screen preview with one button
+- Screen stays awake during calls
+- Low-memory mode and an on-demand call engine (tray) keep RAM down
 - Call quality: GPU camera cleanup (face-weighted exposure, shadow lift, colour correction, denoise, sharpen) and voice EQ, compression and limiting (tray toggles)
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser

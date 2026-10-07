@@ -5,7 +5,8 @@ process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', 
 
 const {
   app, BrowserWindow, Tray, Menu, shell, session, clipboard,
-  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer, nativeTheme
+  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer, nativeTheme,
+  Notification, powerSaveBlocker
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -47,7 +48,13 @@ const store = new Store({
     enhanceCamera: true,
     enhanceMic: true,
     // Offer calling even where WhatsApp has not enabled it for the account.
-    webCalling: true
+    webCalling: true,
+    // Start WhatsApp's call engine (WebAssembly + ~20 worker threads) on the first
+    // call instead of at launch. Saves a few hundred MB while idle.
+    lazyCallEngine: true,
+    lowMemory: true,
+    // Record every call from the moment it connects (needs the one-time consent).
+    autoRecord: false
   }
 });
 
@@ -123,6 +130,10 @@ function configureRuntime() {
   // Electron exposes it but never completes requestWindow(), so the pop-out was a
   // blank white window. Without the API WhatsApp uses its classic pop-out window.
   app.commandLine.appendSwitch('disable-blink-features', 'DocumentPictureInPictureAPI');
+  // Chromium's low-memory profile: smaller image-decode and raster caches. Measured
+  // on a signed-in profile it cut the main renderer from ~415 to ~347 MB with no
+  // change to call quality (same frames, size and rate in a WebRTC loopback).
+  if (store.get('lowMemory')) app.commandLine.appendSwitch('enable-low-end-device-mode');
   app.commandLine.appendSwitch('disk-cache-size', String(96 * 1024 * 1024));
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -652,7 +663,11 @@ function toggleWindow() {
 }
 
 function mediaPrefs() {
-  return { video: store.get('enhanceCamera'), audio: store.get('enhanceMic') };
+  return {
+    video: store.get('enhanceCamera'),
+    audio: store.get('enhanceMic'),
+    autoRecord: store.get('autoRecord')
+  };
 }
 
 /** Push the call-quality toggles into the page; they apply to the next call. */
@@ -661,6 +676,15 @@ function pushMediaPrefs() {
   mainWindow.webContents
     .executeJavaScript('window.__waMedia = ' + JSON.stringify(mediaPrefs()))
     .catch(() => {});
+}
+
+/** Turning automatic recording on needs the same consent as the first manual one. */
+function onAutoRecordToggled() {
+  if (!store.get('autoRecord')) return pushMediaPrefs();
+  confirmRecording(false).then((ok) => {
+    if (!ok) { store.set('autoRecord', false); refreshTrayMenu(); }
+    pushMediaPrefs();
+  });
 }
 
 /** A tray checkbox bound to a store key, with an optional restart nudge. */
@@ -710,7 +734,12 @@ function refreshTrayMenu() {
     toggle('Block telemetry', 'blockTelemetry', true),
     toggle('Enhance camera in calls', 'enhanceCamera', false, pushMediaPrefs),
     toggle('Enhance microphone in calls', 'enhanceMic', false, pushMediaPrefs),
+    toggle('Record calls automatically', 'autoRecord', false, onAutoRecordToggled),
+    { label: 'Open recordings folder', click: openRecordingsDir },
+    { label: 'Recordings folder...', click: chooseRecordingsDir },
     toggle('Enable calling', 'webCalling', true),
+    toggle('Start call engine on demand (saves RAM)', 'lazyCallEngine', true),
+    toggle('Low memory mode', 'lowMemory', true),
       toggle('Privacy Blur', 'privacyBlur', true),
     { label: 'Resource usage…', click: showResourceUsage },
     { type: 'separator' },
@@ -740,8 +769,7 @@ function showAbout() {
     .replaceAll('{{VERSION}}', app.getVersion())
     .replaceAll('{{ELECTRON}}', process.versions.electron)
     .replaceAll('{{CHROMIUM}}', process.versions.chrome)
-    .replaceAll('{{NODE}}', process.versions.node)
-    .replaceAll('{{YEAR}}', '2026');
+    .replaceAll('{{NODE}}', process.versions.node);
 
   aboutWindow = new BrowserWindow({
     width: 660,
@@ -898,9 +926,129 @@ handle('pane-width:get', () => store.get('paneWidth'));
 handle('privacyBlur:get', () => store.get('privacyBlur'));
 handle('media:prefs', () => mediaPrefs());
 
+// ---------------------------------------------------------------------------
+// Call recordings. The page records (src/preload.js, hookCallRecording) and
+// streams the file here in chunks, so it is on disk as it is made and a crash
+// loses seconds, not the whole call.
+// ---------------------------------------------------------------------------
+const openRecordings = new Map();   // id -> { out: WriteStream, file }
+let recordingSeq = 0;
+
+function recordingsDir() {
+  return store.get('recordingsDir') || path.join(app.getPath('videos'), 'WA');
+}
+
+/** One-time notice: recording laws differ and some need everyone's consent. */
+async function confirmRecording(auto) {
+  if (store.get('recordingConsentAck')) return true;
+  if (auto) return false;            // automatic recording only after an explicit yes
+  const { response, checkboxChecked } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Record calls',
+    message: 'Recording a call may need everyone\'s permission.',
+    detail: 'Laws about recording calls differ by country, and many require every person on the ' +
+      'call to agree. Only record if the other person knows and has agreed.\n\n' +
+      'Recordings are saved on this PC, in:\n' + recordingsDir(),
+    buttons: ['Record', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    checkboxLabel: 'I understand, don\'t show this again'
+  });
+  if (response !== 0) return false;
+  if (checkboxChecked) store.set('recordingConsentAck', true);
+  return true;
+}
+
+handle('recording:open', async (_e, opts) => {
+  const ext = ['mp4', 'm4a', 'webm'].includes(opts && opts.ext) ? opts.ext : 'webm';
+  if (!(await confirmRecording(Boolean(opts && opts.auto)))) return { ok: false };
+  try {
+    const dir = recordingsDir();
+    await fs.promises.mkdir(dir, { recursive: true });
+    const now = new Date();                      // local time, not UTC
+    const p2 = (n) => String(n).padStart(2, '0');
+    const stamp = now.getFullYear() + '-' + p2(now.getMonth() + 1) + '-' + p2(now.getDate()) + ' ' +
+      p2(now.getHours()) + '-' + p2(now.getMinutes()) + '-' + p2(now.getSeconds());
+    const file = path.join(dir, (opts && opts.video ? 'Video call ' : 'Voice call ') + stamp + '.' + ext);
+    const id = ++recordingSeq;
+    const out = fs.createWriteStream(file, { flags: 'wx' });
+    out.on('error', (err) => {
+      console.error('Recording write failed:', err.message);
+      openRecordings.delete(id);
+    });
+    openRecordings.set(id, { out, file });
+    return { ok: true, id };
+  } catch (err) {
+    console.error('Could not start recording:', err.message);
+    return { ok: false };
+  }
+});
+
+on('recording:chunk', (_e, id, buf) => {
+  const r = openRecordings.get(id);
+  if (r && buf) r.out.write(Buffer.from(buf));
+});
+
+function finishRecording(id) {
+  const r = openRecordings.get(id);
+  if (!r) return Promise.resolve();
+  openRecordings.delete(id);
+  return new Promise((resolve) => r.out.end(() => {
+    try {
+      const n = new Notification({ title: 'Call recording saved', body: path.basename(r.file), silent: true });
+      n.on('click', () => shell.showItemInFolder(r.file));
+      n.show();
+    } catch (e) { /* notifications unavailable */ }
+    resolve();
+  }));
+}
+on('recording:close', (_e, id) => finishRecording(id));
+
+/** Quit path: ask the page to stop recording and give the files a moment to close. */
+let flushingRecordings = false;
+app.on('before-quit', (e) => {
+  if (flushingRecordings || openRecordings.size === 0 || !mainWindow || mainWindow.isDestroyed()) return;
+  e.preventDefault();
+  flushingRecordings = true;
+  mainWindow.webContents.send('recording:flush');
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (openRecordings.size === 0 || Date.now() - started > 4000) {
+      clearInterval(timer);
+      app.quit();
+    }
+  }, 150);
+});
+
+function chooseRecordingsDir() {
+  dialog.showOpenDialog(mainWindow, {
+    title: 'Where should call recordings be saved?',
+    defaultPath: recordingsDir(),
+    properties: ['openDirectory', 'createDirectory']
+  }).then(({ canceled, filePaths }) => {
+    if (!canceled && filePaths[0]) store.set('recordingsDir', filePaths[0]);
+  });
+}
+
+function openRecordingsDir() {
+  const dir = recordingsDir();
+  fs.promises.mkdir(dir, { recursive: true }).then(() => shell.openPath(dir));
+}
+
+// Keep the screen awake while a call window is open.
+let callBlocker = null;
+on('call-state', (_e, active) => {
+  if (active && callBlocker === null) callBlocker = powerSaveBlocker.start('prevent-display-sleep');
+  else if (!active && callBlocker !== null) { powerSaveBlocker.stop(callBlocker); callBlocker = null; }
+});
+
 // Read synchronously by the preload before WhatsApp boots (see enableWebCalling).
 ipcMain.on('features:get', (e) => {
-  e.returnValue = { calling: fromWhatsApp(e) && Boolean(store.get('webCalling')) };
+  const ok = fromWhatsApp(e);
+  e.returnValue = {
+    calling: ok && Boolean(store.get('webCalling')),
+    lazyEngine: ok && Boolean(store.get('lazyCallEngine'))
+  };
 });
 handle('system:accent-color', () => getSystemAccent());
 on('pane-width:set', (_e, px) => store.set('paneWidth', Math.max(0, Math.min(4000, Number(px) || 0))));
