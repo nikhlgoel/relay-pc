@@ -41,7 +41,7 @@ const WHATSAPP_URL = 'https://web.whatsapp.com/';
 
 // A real, current Chrome UA. WhatsApp Web nags about an "unsupported browser"
 // under the default Electron UA.
-const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WhatsApp/2.3000.1014169528';
+const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // Endpoints that exist purely to report on you. None of these carry message
 // traffic, media or presence, so blocking them costs no functionality.
