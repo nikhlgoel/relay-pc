@@ -114,6 +114,10 @@ function configureRuntime() {
   app.commandLine.appendSwitch('disable-sync');
   app.commandLine.appendSwitch('no-pings');
   
+  // WhatsApp's call pop-out prefers Document Picture-in-Picture when the API exists.
+  // Electron exposes it but never completes requestWindow(), so the pop-out was a
+  // blank white window. Without the API WhatsApp uses its classic pop-out window.
+  app.commandLine.appendSwitch('disable-blink-features', 'DocumentPictureInPictureAPI');
   app.commandLine.appendSwitch('disk-cache-size', String(96 * 1024 * 1024));
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -328,7 +332,14 @@ function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url, frameName, features }) => {
     if (debugPerms) console.log('[open]', url.slice(0, 120), frameName, features);
     if (url === 'about:blank' || url.startsWith('blob:') || isWhatsAppOwnedUrl(url)) {
-      return { action: 'allow' };
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          autoHideMenuBar: true,
+          backgroundColor: '#0e1621',
+          icon: asset('icon.png')
+        }
+      };
     }
     openExternalSafe(url);
     return { action: 'deny' };
@@ -354,6 +365,14 @@ function createWindow() {
       return;
     }
     setTimeout(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.reload(), 500 * crashTimes.length);
+  });
+
+  // A blank pop-out is WhatsApp's call window: it fills the page itself. Keep it
+  // above other windows (that is the point of popping a call out) and drop the
+  // File/Edit/View bar that the main window's menu would otherwise give it.
+  mainWindow.webContents.on('did-create-window', (child, details) => {
+    child.setMenu(null);
+    if (details.url === 'about:blank') child.setAlwaysOnTop(true, 'floating');
   });
 
   // Offline at launch (or a DNS blip): retry with a growing delay, and stop

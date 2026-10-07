@@ -130,19 +130,25 @@ function ancestorWhere(el, test) {
 }
 
 /** Climb to the outermost ancestor that is still banner-sized. */
-function bannerRoot(el) {
+function bannerRoot(el, maxHeight = MAX_BANNER_HEIGHT) {
   let node = el;
   while (node.parentElement) {
     const parent = node.parentElement;
     if (parent === document.body || parent.id === 'app' || parent.id === 'pane-side') break;
-    if (parent.getBoundingClientRect().height > MAX_BANNER_HEIGHT) break;
+    if (parent.getBoundingClientRect().height > maxHeight) break;
     node = parent;
   }
   return node;
 }
 
 const DESKTOP_RULES = [
-  { text: /^(get|download) whatsapp for (windows|mac|desktop)\b/i, target: bannerRoot },
+  { text: /^(get|download) whatsapp for (windows|mac|desktop)\b/i, target: (el) => bannerRoot(el) },
+  // Empty-state cards in Calls and elsewhere: an illustration, a line such as
+  // "Download WhatsApp for Windows to start returning missed calls" and a
+  // button. A card is taller than a banner, so allow a bigger one.
+  { text: /^download whatsapp for windows to\b/i, target: (el) => bannerRoot(el, 420) },
+  { text: /^(download whatsapp|download app|get the app|get the windows app)$/i,
+    target: (el) => bannerRoot(el, 420) },
   // Smallest container that holds both the label and its checkbox.
   { text: /^stay logged in on this browser/i,
     target: (el) => ancestorWhere(el, (a) => a.querySelector('input[type="checkbox"]')) },
@@ -171,7 +177,7 @@ function stripBrowserOnly(root) {
   for (const el of root.querySelectorAll('span, div, label, button')) {
     if (el.childElementCount !== 0) continue;
     const text = el.textContent.trim();
-    if (!text || text.length > 60 || el.closest(MODAL)) continue;
+    if (!text || text.length > 100 || el.closest(MODAL)) continue;
     for (const rule of DESKTOP_RULES) {
       if (rule.text.test(text)) hideElement(rule.target(el));
     }
@@ -835,6 +841,7 @@ function hookMediaDevices() {
       // not a fixed 30 fps clock that duplicates frames and wastes encoder time.
       const out = renderer.canvas.captureStream(0).getVideoTracks()[0];
       if (!out) throw new Error('no capture track');
+      out.__relayLocal = true;      // lets Relay tell its own preview from the remote picture
 
       const meter = createMeter();
       let active = true;
@@ -939,8 +946,11 @@ function enableWebCalling() {
     if (window.__relayCalling) return;
     window.__relayCalling = true;
     let tries = 0;
+    // WhatsApp logs an error each time a module is required before its
+    // dependencies exist, so wait until the app shell has been drawn.
     const timer = setInterval(() => {
-      if (++tries > 2400) return clearInterval(timer);          // give up after ~60s
+      if (!document.getElementById('app') || !document.getElementById('app').firstElementChild) return;
+      if (++tries > 240) return clearInterval(timer);           // give up after ~60s
       try {
         const AB = window.require && window.require('WAWebABProps');
         if (!AB || typeof AB.getABPropConfigValue !== 'function') return;
@@ -953,7 +963,7 @@ function enableWebCalling() {
         }
         clearInterval(timer);
       } catch (e) { /* module loader not ready yet */ }
-    }, 25);
+    }, 250);
   }
   try {
     webFrame.executeJavaScript('(' + pageWorld.toString() + ')();');
@@ -980,6 +990,8 @@ ipcRenderer.invoke('media:prefs')
 
 // ===========================================================================
 window.addEventListener('DOMContentLoaded', () => {
+  // Pop-out windows (about:blank, filled in by WhatsApp) need none of this.
+  if (location.origin !== 'https://web.whatsapp.com') return;
   watchBadge();
   hookNotifications();
   watchForBrowserOnly();
