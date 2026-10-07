@@ -254,6 +254,30 @@ footer > div,
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1) !important; border-radius: 4px !important; }
 ::-webkit-scrollbar-track { background: transparent !important; }
 
+/* --- Branding -------------------------------------------------------------
+   This is Relay, not WhatsApp. preload.js tags the host element of WhatsApp's
+   logo and wordmark SVGs; the SVGs are hidden and Relay's icon / name drawn
+   instead. (The legal notice lives in the About window.) */
+[data-relay-brand] svg { display: none !important; }
+[data-relay-brand="logo"] {
+  display: inline-block !important;
+  width: 31px;
+  height: 30px;
+  background: url("__RELAY_ICON__") center / contain no-repeat;
+}
+[data-relay-brand="wordmark"] {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 28px;
+}
+[data-relay-brand="wordmark"]::after {
+  content: "Relay";
+  font: 700 22px/28px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: .2px;
+  color: #1fa855;                        /* login screen is light */
+}
+[data-wa-pane] [data-relay-brand="wordmark"]::after { color: #e9edef; }
+
 /* --- Privacy blur (tray toggle) ----------------------------------------- */
 body.privacy-blur-active .message-in,
 body.privacy-blur-active .message-out,

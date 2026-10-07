@@ -10,7 +10,7 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Tray icon, close-to-tray, start with Windows, global show/hide shortcut
 - Native notifications; clicking one brings the window forward
 - Unread badge on the taskbar icon
-- Voice and video calls with screen sharing. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
+- Voice and video calls with screen sharing and a full-screen button on the call window. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
 - Call quality: GPU camera cleanup (face-weighted exposure, shadow lift, colour correction, denoise, sharpen) and voice EQ, compression and limiting (tray toggles)
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
@@ -18,6 +18,10 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Dark by default; your choice in WhatsApp settings is kept
 - Optional privacy blur and telemetry blocking
 - Browser-only prompts (download banner, "stay logged in", sign-up) removed
+
+## Disclaimer
+
+Relay is an independent, unofficial project. It is not affiliated with, authorised or endorsed by WhatsApp LLC or Meta Platforms, Inc. WhatsApp is a trademark of its owner. Relay is a window around WhatsApp Web: messaging, calls and your data are WhatsApp's own software and service. WhatsApp does not support third-party clients and may restrict access, so use it at your own risk and under WhatsApp's [Terms](https://www.whatsapp.com/legal/terms-of-service). Help > About Relay (F1) shows the full notice.
 
 ## Install
 

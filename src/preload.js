@@ -163,9 +163,27 @@ function hideElement(el) {
   el.dataset.waHidden = '';
 }
 
+/**
+ * Tag the element that holds WhatsApp's logo / wordmark so theme.css can draw
+ * Relay's instead. Matched by the SVG's own <title>, which is stable, unlike
+ * class names.
+ */
+function applyBranding(root) {
+  if (!root.querySelectorAll) return;
+  for (const title of root.querySelectorAll('svg > title')) {
+    const name = title.textContent;
+    if (name !== 'wa-wordmark' && name !== 'wa-logo') continue;
+    const host = title.parentElement.parentElement;
+    if (host && !host.dataset.relayBrand) {
+      host.dataset.relayBrand = name === 'wa-logo' ? 'logo' : 'wordmark';
+    }
+  }
+}
+
 /** Hide every browser-only element inside `root` (which may itself be one). */
 function stripBrowserOnly(root) {
   root = root || document;
+  applyBranding(root);
 
   if (root.matches && root.matches(PROMO_LINK)) hideElement(bannerRoot(root));
   if (!root.querySelectorAll) return;
@@ -386,6 +404,7 @@ async function setupLayout() {
   const tick = () => {
     if (document.hidden) return;
     refresh();
+    installCallFullscreenButton();
     if (panes && panes.row !== observedRow) {
       rowObserver.disconnect();
       rowObserver.observe(panes.row, { childList: true });
@@ -398,6 +417,71 @@ async function setupLayout() {
   window.addEventListener('resize', () => { applyWidth(width || initial); refresh(); });
   document.addEventListener('fullscreenchange', () => setTimeout(refresh, 100));
   ipcRenderer.on('window-resized', () => { applyWidth(width || initial); refresh(); });
+}
+
+// ===========================================================================
+// Call window: full screen.
+//
+// The call is a floating, resizable panel (data-testid="move_resize_component").
+// Making that one element fullscreen is enough: WhatsApp re-lays the call out
+// for the new size, including the video resolution, and restores it on exit.
+// A button is cloned from the toolbar's "More options" button so it picks up the
+// toolbar's own styling; double-clicking the picture does the same.
+// ===========================================================================
+const FULLSCREEN_ENTER = 'M5 5h5v2H7v3H5V5zm9 0h5v5h-2V7h-3V5zM5 14h2v3h3v2H5v-5zm12 0h2v5h-5v-2h3v-3z';
+const FULLSCREEN_EXIT = 'M8 5v3H5v2h5V5H8zm6 0v5h5V8h-3V5h-2zM5 14v2h3v3h2v-5H5zm9 0v5h2v-3h3v-2h-5z';
+
+function toggleCallFullscreen(panel) {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else panel.requestFullscreen().catch(() => {});
+}
+
+function syncFullscreenButton(panel) {
+  const btn = panel.querySelector('[data-relay-fs] button');
+  if (!btn) return;
+  const on = document.fullscreenElement === panel;
+  btn.setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
+  const path = btn.querySelector('svg path');
+  if (path) path.setAttribute('d', on ? FULLSCREEN_EXIT : FULLSCREEN_ENTER);
+  const title = btn.querySelector('svg title');
+  if (title) title.textContent = on ? 'exit-full-screen' : 'full-screen';
+}
+
+function installCallFullscreenButton() {
+  const panel = document.querySelector('[data-testid="move_resize_component"]');
+  if (!panel) return;
+  if (!panel.dataset.relayFsReady) {
+    panel.dataset.relayFsReady = '';
+    panel.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button, [role="toolbar"]')) return;
+      toggleCallFullscreen(panel);
+    });
+    document.addEventListener('fullscreenchange', () => syncFullscreenButton(panel));
+  }
+  if (panel.querySelector('[data-relay-fs]')) return;
+
+  const more = [...panel.querySelectorAll('button[aria-label]')]
+    .find((b) => /^more options$/i.test(b.getAttribute('aria-label')));
+  if (!more) return;
+  // The button sits in a couple of single-child wrappers; clone the outermost.
+  let wrapper = more;
+  while (wrapper.parentElement && wrapper.parentElement.children.length === 1) wrapper = wrapper.parentElement;
+  const slot = wrapper.parentElement;
+  if (!slot) return;
+
+  const clone = wrapper.cloneNode(true);
+  clone.dataset.relayFs = '';
+  const btn = clone.querySelector('button');
+  btn.removeAttribute('aria-expanded');
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleCallFullscreen(panel);
+  });
+  // The panel can be dragged by mouse; a press on our button must not start that.
+  btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  slot.insertBefore(clone, wrapper);
+  syncFullscreenButton(panel);
 }
 
 // ===========================================================================
@@ -957,9 +1041,23 @@ function enableWebCalling() {
         if (!AB.__relayPatched) {
           const original = AB.getABPropConfigValue;
           AB.getABPropConfigValue = function (key) {
-            return key === 'enable_web_calling' ? true : original.apply(this, arguments);
+            if (key === 'enable_web_calling') return true;
+            // 0 = the control group: no "get the desktop app" empty-state banner.
+            if (key === 'wa_web_growth_empty_state_upsell_variant_m1') return 0;
+            return original.apply(this, arguments);
           };
           AB.__relayPatched = true;
+        }
+        // "Download WhatsApp for Windows to start making / returning calls" and the
+        // other desktop-app nudges are all gated by one platform check that is
+        // true for any Windows browser that is not the official app. Relay is the
+        // desktop app, so the check says no and the nudges (and the cards with the
+        // laptop-and-phone animation) never render.
+        const U = window.require('WAWebDesktopUpsellUtils');
+        if (U && !U.__relayPatched) {
+          U.isWebUserOnSupportedWindowsOSForUWPAsync = () => Promise.resolve(false);
+          U.isWebUserOnSupportedMacOSForCatalystAsync = () => Promise.resolve(false);
+          U.__relayPatched = true;
         }
         clearInterval(timer);
       } catch (e) { /* module loader not ready yet */ }

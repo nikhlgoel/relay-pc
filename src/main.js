@@ -53,7 +53,12 @@ const store = new Store({
 
 const WHATSAPP_URL = 'https://web.whatsapp.com/';
 const debugPerms = Boolean(process.env.RELAY_DEBUG_PERMS);   // logs permission + popup decisions
-const THEME_CSS = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8');
+// A 64px copy for the page and the About window (the full 256px icon is ~60 KB).
+const ICON_URI = 'data:image/png;base64,' +
+  nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
+    .resize({ width: 64, height: 64, quality: 'best' }).toPNG().toString('base64');
+const THEME_CSS = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8')
+  .replaceAll('__RELAY_ICON__', ICON_URI);
 
 // The default Electron UA carries "Electron/x" and the app name, which makes
 // WhatsApp Web nag about an unsupported browser. Build the UA from the Chromium
@@ -325,6 +330,12 @@ function createWindow() {
     }
   }, 1500);
 
+  // The page sets its own title ("(3) WhatsApp"); this window is Relay.
+  mainWindow.on('page-title-updated', (e, title) => {
+    e.preventDefault();
+    mainWindow.setTitle(title.replace(/WhatsApp/gi, 'Relay'));
+  });
+
   // Open real links in the user's browser, never in an app window.
   // The old check was url.includes('whatsapp.com'), which also matched
   // 'https://evil.example/?whatsapp.com' and gave that page an app window that
@@ -407,6 +418,10 @@ function createWindow() {
   // F11 fullscreen. WhatsApp Web swallows the keypress before the menu
   // accelerator sees it, so handle it on the way in.
   mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F1') {
+      showAbout();
+      event.preventDefault();
+    }
     if (input.type === 'keyDown' && input.key === 'F11') {
       mainWindow.setFullScreen(!mainWindow.isFullScreen());
       event.preventDefault();
@@ -703,8 +718,60 @@ function refreshTrayMenu() {
     { label: 'Reload', click: () => mainWindow && mainWindow.reload() },
     { label: 'Log out / reset session', click: resetSession },
     { type: 'separator' },
+    { label: 'About Relay', click: showAbout },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
   ]));
+}
+
+// ---------------------------------------------------------------------------
+// About: what Relay is, that it is unofficial, and the licences. A static page
+// (src/about.html) with a strict CSP and no scripts or preload.
+// ---------------------------------------------------------------------------
+let aboutWindow = null;
+
+function showAbout() {
+  if (aboutWindow && !aboutWindow.isDestroyed()) {
+    aboutWindow.show();
+    aboutWindow.focus();
+    return;
+  }
+  const html = fs.readFileSync(path.join(__dirname, 'about.html'), 'utf8')
+    .replaceAll('{{ICON}}', ICON_URI)
+    .replaceAll('{{VERSION}}', app.getVersion())
+    .replaceAll('{{ELECTRON}}', process.versions.electron)
+    .replaceAll('{{CHROMIUM}}', process.versions.chrome)
+    .replaceAll('{{NODE}}', process.versions.node)
+    .replaceAll('{{YEAR}}', '2026');
+
+  aboutWindow = new BrowserWindow({
+    width: 660,
+    height: 760,
+    minWidth: 420,
+    minHeight: 360,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    autoHideMenuBar: true,
+    backgroundColor: '#0e1621',
+    title: 'About Relay',
+    icon: asset('icon.png'),
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: 'relay-about',     // in memory, separate from the WhatsApp session
+      spellcheck: false
+    }
+  });
+  aboutWindow.setMenu(null);
+  aboutWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  aboutWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalSafe(url);
+    return { action: 'deny' };
+  });
+  aboutWindow.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault();
+    openExternalSafe(url);
+  });
+  aboutWindow.on('closed', () => { aboutWindow = null; });
 }
 
 async function resetSession() {
@@ -776,6 +843,15 @@ function createMenu() {
         { role: 'togglefullscreen' },
         { label: 'Developer tools', accelerator: 'CmdOrCtrl+Shift+I',
           click: () => mainWindow && mainWindow.webContents.toggleDevTools() }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        { label: 'About Relay', accelerator: 'F1', click: showAbout },
+        { type: 'separator' },
+        { label: 'Source code', click: () => shell.openExternal('https://github.com/nikhlgoel/whatsapp-pc') },
+        { label: 'Report an issue', click: () => shell.openExternal('https://github.com/nikhlgoel/whatsapp-pc/issues') }
       ]
     }
   ]));
