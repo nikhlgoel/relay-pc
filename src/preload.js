@@ -63,9 +63,7 @@ function hookNotifications() {
   script.textContent = `
     (() => {
       
-    setInterval(() => {
-      if (window.gc) window.gc();
-    }, 60000);
+    
 
         function notifyActivation() {
         window.dispatchEvent(new CustomEvent('wa-activate-window'));
@@ -431,6 +429,31 @@ const CSS = `
     box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
   }
 
+  
+  /* Make top headers draggable */
+  header, [data-wa-pane="side"] header, [data-wa-pane="main"] > header {
+    -webkit-app-region: drag !important;
+  }
+  /* But make buttons inside headers clickable */
+  header button, header [role="button"], header input, header a, header svg {
+    -webkit-app-region: no-drag !important;
+  }
+
+  /* Fix Compose Box Glitch */
+  footer {
+    background: transparent !important;
+    border: none !important;
+  }
+  
+  [data-testid="compose-box"] {
+    background: transparent !important;
+  }
+  
+  /* Ensure the row holding the compose box doesn't have an ugly background */
+  footer > div {
+    background: transparent !important;
+  }
+
   /* Chat List / Folders Filter */
   [data-testid="filter-list"] {
     padding-top: 10px !important;
@@ -514,10 +537,7 @@ const CSS = `
   /* When an attachment preview (document, image, video, media) is open,
      hide the conversation pane so the preview cleanly fills the area
      directly after the contacts sidebar instead of squishing #main. */
-  [data-wa-preview-active] #main,
-  [data-wa-preview-active] [data-wa-pane="main"] {
-    display: none !important;
-  }
+  
   [data-wa-pane="preview"] {
     flex: 1 1 auto !important;
     width: auto !important;
@@ -572,7 +592,7 @@ const CSS = `
   body:has([data-testid*="image-viewer"]) #wa-splitter,
   body:has([data-testid*="visual-media-viewer"]) #wa-splitter,
   body:has([data-testid*="media-preview"]) #wa-splitter,
-  body:has([data-wa-preview-active]) #wa-splitter,
+  body:has() #wa-splitter,
   body:has([role="dialog"]) #wa-splitter,
   body:has([aria-modal="true"]) #wa-splitter,
   body:has([aria-label*="Media viewer" i]) #wa-splitter,
@@ -694,7 +714,7 @@ function applyWidth(px) {
 function positionSplitter() {
   if (!splitter || !panes) return;
   const isModalOpen = Boolean(document.querySelector(
-    '[data-animate-media-viewer], [data-testid*="media-viewer"], [data-testid*="image-viewer"], [data-testid*="visual-media-viewer"], [data-testid*="media-preview"], [data-wa-preview-active], [role="dialog"], [aria-modal="true"], [aria-label*="Media viewer" i], [aria-label*="Photo" i][role="dialog"], div[tabindex="-1"][style*="z-index"]'
+    '[data-animate-media-viewer], [data-testid*="media-viewer"], [data-testid*="image-viewer"], [data-testid*="visual-media-viewer"], [data-testid*="media-preview"],  [role="dialog"], [aria-modal="true"], [aria-label*="Media viewer" i], [aria-label*="Photo" i][role="dialog"], div[tabindex="-1"][style*="z-index"]'
   ));
   if (isModalOpen) {
     splitter.style.display = 'none';

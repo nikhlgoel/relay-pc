@@ -41,9 +41,7 @@ const WHATSAPP_URL = 'https://web.whatsapp.com/';
 
 // A real, current Chrome UA. WhatsApp Web nags about an "unsupported browser"
 // under the default Electron UA.
-const CHROME_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 WhatsApp/2.3000.1014169528';
 
 // Endpoints that exist purely to report on you. None of these carry message
 // traffic, media or presence, so blocking them costs no functionality.
@@ -88,9 +86,9 @@ function configureRuntime() {
   app.commandLine.appendSwitch('no-pings');
   
   // Memory and background stability optimizations
-  app.commandLine.appendSwitch('disable-site-isolation-trials');
-  app.commandLine.appendSwitch('process-per-site');
-  app.commandLine.appendSwitch('js-flags', '--expose-gc --max-old-space-size=384');
+  // Removed disable-site-isolation-trials
+  // Removed process-per-site
+  // Removed js-flags
   app.commandLine.appendSwitch('disable-background-timer-throttling');
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
   
@@ -273,6 +271,9 @@ function createWindow() {
 
   // Open real links in the user's browser, never in an app window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.includes('whatsapp.com') || url === 'about:blank' || url.startsWith('blob:')) {
+      return { action: 'allow' };
+    }
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
