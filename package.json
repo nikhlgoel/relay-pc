@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "repository": "nikhlgoel/whatsapp-pc",
   "description": "Relay - Native Desktop Client",
   "main": "src/main.js",
