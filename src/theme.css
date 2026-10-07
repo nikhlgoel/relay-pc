@@ -19,6 +19,25 @@
 }
 [data-wa-pane="side"] { position: relative; }
 
+/* WhatsApp's panels (attachment preview, settings, new chat...) are laid out in
+   two drawers whose left one is as wide as WhatsApp's own chat list (480px).
+   With a resizable list that left panel has to follow our width, or the
+   preview starts in the wrong place and overlaps the conversation. The 1px
+   border on these panels is what showed up as a thin line through the middle
+   of the chat. */
+[data-testid="drawer-left"] {
+  width: var(--wa-side-width, 360px) !important;
+  min-width: var(--wa-side-width, 360px) !important;
+  max-width: var(--wa-side-width, 360px) !important;
+  flex: 0 0 var(--wa-side-width, 360px) !important;
+}
+[data-testid="drawer-left"],
+[data-testid="drawer-middle"] {
+  border-left: none !important;
+  border-right: none !important;
+  box-shadow: none !important;
+}
+
 /* Hairline dividers between the rail, the chat list and the conversation. */
 [data-wa-pane],
 #main,
@@ -39,17 +58,18 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  right: -5px;
-  width: 6px;
+  right: -6px;
+  width: 12px;
   z-index: 5;
   cursor: col-resize;
+  -webkit-app-region: no-drag;   /* the top-edge drag strip must not swallow it */
 }
 #wa-splitter::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: 5px;
   width: 2px;
   background: #5288c1;
   opacity: 0;

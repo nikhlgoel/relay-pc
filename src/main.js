@@ -5,7 +5,7 @@ process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', 
 
 const {
   app, BrowserWindow, Tray, Menu, shell, session, clipboard,
-  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer
+  nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer, nativeTheme
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -45,11 +45,14 @@ const store = new Store({
     // Call quality (see preload.js). The camera path costs a canvas copy of
     // every frame, so both can be switched off.
     enhanceCamera: true,
-    enhanceMic: true
+    enhanceMic: true,
+    // Offer calling even where WhatsApp has not enabled it for the account.
+    webCalling: true
   }
 });
 
 const WHATSAPP_URL = 'https://web.whatsapp.com/';
+const debugPerms = Boolean(process.env.RELAY_DEBUG_PERMS);   // logs permission + popup decisions
 const THEME_CSS = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8');
 
 // The default Electron UA carries "Electron/x" and the app name, which makes
@@ -125,6 +128,9 @@ function configureRuntime() {
 }
 
 configureRuntime();
+
+// The whole UI is dark: native menus, dialogs and prefers-color-scheme follow.
+nativeTheme.themeSource = 'dark';
 // Must equal build.appId in package.json (test/appid.test.js checks): that is the
 // AUMID electron-builder stamps on the Start-menu shortcut, and Windows keys
 // toast notifications, taskbar grouping and Jump Lists on it. A different value
@@ -272,7 +278,6 @@ function createWindow() {
   // used to say yes to every origin, including any frame or window the page
   // could open.
   const isTrusted = (url) => isWhatsAppWebUrl(url);
-  const debugPerms = Boolean(process.env.RELAY_DEBUG_PERMS);
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     const url = (details && details.requestingUrl) || wc.getURL();
     if (debugPerms) console.log('[perm] request', permission, url);
@@ -320,7 +325,8 @@ function createWindow() {
   // The old check was url.includes('whatsapp.com'), which also matched
   // 'https://evil.example/?whatsapp.com' and gave that page an app window that
   // inherits our preload.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName, features }) => {
+    if (debugPerms) console.log('[open]', url.slice(0, 120), frameName, features);
     if (url === 'about:blank' || url.startsWith('blob:') || isWhatsAppOwnedUrl(url)) {
       return { action: 'allow' };
     }
@@ -513,55 +519,72 @@ async function trimRendererMemory() {
   }
 }
 
+/**
+ * Right-click menu. Only offers what applies to what was clicked - the old one
+ * always showed a disabled Cut / Copy / Paste / Select all, which on a picture
+ * looked like a generic browser. WhatsApp draws its own menus on messages and
+ * chats; this handles everything else (media viewer, links, text, inputs).
+ */
 function showContextMenu(ses, params) {
+  const wc = mainWindow.webContents;
   const items = [];
-
-  for (const suggestion of params.dictionarySuggestions) {
-    items.push({
-      label: suggestion,
-      click: () => mainWindow.webContents.replaceMisspelling(suggestion)
-    });
-  }
-  if (params.dictionarySuggestions.length) items.push({ type: 'separator' });
+  const separator = () => {
+    if (items.length && items[items.length - 1].type !== 'separator') items.push({ type: 'separator' });
+  };
 
   if (params.misspelledWord) {
+    for (const word of params.dictionarySuggestions.slice(0, 5)) {
+      items.push({ label: word, click: () => wc.replaceMisspelling(word) });
+    }
+    separator();
     items.push({
       label: 'Add to dictionary',
       click: () => ses.addWordToSpellCheckerDictionary(params.misspelledWord)
     });
-    items.push({ type: 'separator' });
-  }
-
-  if (params.hasImageContents) {
-    items.push({
-      label: 'Copy image',
-      click: () => mainWindow.webContents.copyImageAt(params.x, params.y)
-    });
-    if (params.srcURL) {
-      items.push({
-        label: 'Save image as...',
-        click: () => mainWindow.webContents.downloadURL(params.srcURL)
-      });
-    }
-    items.push({ type: 'separator' });
+    separator();
   }
 
   if (params.linkURL) {
-    items.push({
-      label: 'Copy link address',
-      click: () => clipboard.writeText(params.linkURL)
-    });
-    items.push({ type: 'separator' });
+    if (shouldOpenExternally(params.linkURL)) {
+      items.push({ label: 'Open link in browser', click: () => shell.openExternal(params.linkURL) });
+    }
+    items.push({ label: 'Copy link address', click: () => clipboard.writeText(params.linkURL) });
+    separator();
   }
 
-  items.push(
-    { role: 'cut', enabled: params.editFlags.canCut },
-    { role: 'copy', enabled: params.editFlags.canCopy },
-    { role: 'paste', enabled: params.editFlags.canPaste },
-    { type: 'separator' },
-    { role: 'selectAll' }
-  );
+  if (params.mediaType === 'image' || params.hasImageContents) {
+    items.push({ label: 'Copy image', click: () => wc.copyImageAt(params.x, params.y) });
+    if (params.srcURL) {
+      items.push({ label: 'Save image as...', click: () => wc.downloadURL(params.srcURL) });
+    }
+    separator();
+  }
 
+  const f = params.editFlags;
+  if (params.isEditable) {
+    items.push(
+      { role: 'undo', enabled: f.canUndo },
+      { role: 'redo', enabled: f.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: f.canCut },
+      { role: 'copy', enabled: f.canCopy },
+      { role: 'paste', enabled: f.canPaste },
+      { type: 'separator' },
+      { role: 'selectAll' }
+    );
+  } else if (params.selectionText.trim()) {
+    const text = params.selectionText.trim();
+    items.push({ role: 'copy' });
+    items.push({
+      label: 'Search the web for "' + (text.length > 28 ? text.slice(0, 28) + '...' : text) + '"',
+      click: () => shell.openExternal('https://www.google.com/search?q=' + encodeURIComponent(text.slice(0, 500)))
+    });
+    separator();
+    items.push({ role: 'selectAll' });
+  }
+
+  while (items.length && items[items.length - 1].type === 'separator') items.pop();
+  if (!items.length) return;                       // nothing useful to offer here
   Menu.buildFromTemplate(items).popup({ window: mainWindow });
 }
 
@@ -653,6 +676,7 @@ function refreshTrayMenu() {
     toggle('Block telemetry', 'blockTelemetry', true),
     toggle('Enhance camera in calls', 'enhanceCamera', false, pushMediaPrefs),
     toggle('Enhance microphone in calls', 'enhanceMic', false, pushMediaPrefs),
+    toggle('Enable calling', 'webCalling', true),
       toggle('Privacy Blur', 'privacyBlur', true),
     { label: 'Resource usage…', click: showResourceUsage },
     { type: 'separator' },
@@ -778,6 +802,11 @@ on('flash-window', () => {
 handle('pane-width:get', () => store.get('paneWidth'));
 handle('privacyBlur:get', () => store.get('privacyBlur'));
 handle('media:prefs', () => mediaPrefs());
+
+// Read synchronously by the preload before WhatsApp boots (see enableWebCalling).
+ipcMain.on('features:get', (e) => {
+  e.returnValue = { calling: fromWhatsApp(e) && Boolean(store.get('webCalling')) };
+});
 handle('system:accent-color', () => getSystemAccent());
 on('pane-width:set', (_e, px) => store.set('paneWidth', Math.max(0, Math.min(4000, Number(px) || 0))));
 

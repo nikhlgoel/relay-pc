@@ -10,10 +10,12 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Tray icon, close-to-tray, start with Windows, global show/hide shortcut
 - Native notifications; clicking one brings the window forward
 - Unread badge on the taskbar icon
-- Voice and video calls with screen sharing
+- Voice and video calls with screen sharing. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
 - Call quality: adaptive camera exposure, voice EQ, compression and limiting (tray toggles)
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
+- Context-aware right-click menu (links, images, text, inputs)
+- Dark by default; your choice in WhatsApp settings is kept
 - Optional privacy blur and telemetry blocking
 - Browser-only prompts (download banner, "stay logged in", sign-up) removed
 

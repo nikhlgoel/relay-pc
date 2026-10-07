@@ -2,6 +2,14 @@
 
 const { ipcRenderer, webFrame } = require('electron');
 
+// The theme is a dark one, but WhatsApp starts every new profile in light mode.
+// Pick dark once; after that the user's own choice in Settings > Theme wins.
+try {
+  if (window.localStorage.getItem('theme') === null) {
+    window.localStorage.setItem('theme', '"dark"');
+  }
+} catch {}
+
 // ===========================================================================
 // Unread badge.
 // WhatsApp Web puts the count in the document title as "(3) WhatsApp".
@@ -108,6 +116,9 @@ const PROMO_LINK =
   'a[href*="whatsapp.com/download"], a[href*="/download/"], a[download]';
 const CHAT_CONTENT = '[role="row"], [role="listitem"], [role="article"], #main';
 const MAX_BANNER_HEIGHT = 200;
+// WhatsApp's own dialogs and popovers (for example the message explaining why a
+// call cannot start) are never hidden, whatever they say.
+const MODAL = '[role="dialog"], [role="alertdialog"], [role="menu"], [aria-modal="true"], [data-animate-modal-popup]';
 
 /** First ancestor of `el` (within a few levels) for which `test` holds. */
 function ancestorWhere(el, test) {
@@ -152,13 +163,15 @@ function stripBrowserOnly(root) {
 
   if (root.matches && root.matches(PROMO_LINK)) hideElement(bannerRoot(root));
   if (!root.querySelectorAll) return;
-  for (const link of root.querySelectorAll(PROMO_LINK)) hideElement(bannerRoot(link));
+  for (const link of root.querySelectorAll(PROMO_LINK)) {
+    if (!link.closest(MODAL)) hideElement(bannerRoot(link));
+  }
 
   // Leaf elements only, and the length check keeps the regexes off long text.
   for (const el of root.querySelectorAll('span, div, label, button')) {
     if (el.childElementCount !== 0) continue;
     const text = el.textContent.trim();
-    if (!text || text.length > 60) continue;
+    if (!text || text.length > 60 || el.closest(MODAL)) continue;
     for (const rule of DESKTOP_RULES) {
       if (rule.text.test(text)) hideElement(rule.target(el));
     }
@@ -198,7 +211,7 @@ function watchForBrowserOnly() {
 // until a width test passes, which could stop on the wrong ancestor when a
 // panel opened and left the width stuck.
 // ===========================================================================
-const MIN_WIDTH = 260;
+const MIN_WIDTH = 240;
 const MAX_FRACTION = 0.6;
 const DEFAULT_FRACTION = 0.3;
 
@@ -642,6 +655,53 @@ try {
   hookMediaDevices();
 } catch (e) {
   console.warn('hookMediaDevices error:', e);
+}
+
+// ===========================================================================
+// Calls.
+//
+// WhatsApp Web only offers calling to accounts with the server-side flag
+// enable_web_calling; for everyone else the call button does nothing useful.
+// The official Windows app always has calling, because it identifies itself as
+// the Windows client. Relay is that client, so switch the flag on locally.
+// This only changes what the page *offers*; whether a call connects is up to
+// WhatsApp's servers. Toggle: tray > Enable calling.
+//
+// Page world, polled from the very start: WhatsApp's module loader appears a
+// moment into boot and the flag must be patched before the call UI is built.
+// ===========================================================================
+function enableWebCalling() {
+  function pageWorld() {
+    if (window.__relayCalling) return;
+    window.__relayCalling = true;
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (++tries > 2400) return clearInterval(timer);          // give up after ~60s
+      try {
+        const AB = window.require && window.require('WAWebABProps');
+        if (!AB || typeof AB.getABPropConfigValue !== 'function') return;
+        if (!AB.__relayPatched) {
+          const original = AB.getABPropConfigValue;
+          AB.getABPropConfigValue = function (key) {
+            return key === 'enable_web_calling' ? true : original.apply(this, arguments);
+          };
+          AB.__relayPatched = true;
+        }
+        clearInterval(timer);
+      } catch (e) { /* module loader not ready yet */ }
+    }, 25);
+  }
+  try {
+    webFrame.executeJavaScript('(' + pageWorld.toString() + ')();');
+  } catch (err) {
+    console.warn('[Calls] flag patch failed:', err);
+  }
+}
+
+try {
+  if (ipcRenderer.sendSync('features:get').calling) enableWebCalling();
+} catch (e) {
+  console.warn('features:get failed:', e);
 }
 
 // The tray toggles arrive asynchronously; the page-world pipeline reads them
