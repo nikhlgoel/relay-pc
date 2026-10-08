@@ -647,7 +647,7 @@ function createWindow() {
       zoom(0.5); event.preventDefault();
     } else if (key === '-' || key === '_' || key === 'Subtract') {
       zoom(-0.5); event.preventDefault();
-    } else if (key === '0' || key === 'Insert') {
+    } else if (key === '0' || (key === 'Insert' && input.code === 'Numpad0')) {      // Ctrl+Insert is Copy: never take it
       zoom(0, true); event.preventDefault();
     }
   });

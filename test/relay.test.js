@@ -164,3 +164,7 @@ test('regression: no system-wide hotkey is registered unless the user turns it o
   assert.equal(calls, 1, 'one registration, inside applyGlobalHotkey');
   assert.match(main, /if \(!store\.get\('globalHotkey'\)\) return;\s*\n\s*if \(!globalShortcut\.register/);
 });
+
+test('regression: Ctrl+Insert (Copy) is not taken for "reset zoom"', () => {
+  assert.match(read('main.js'), /key === 'Insert' && input\.code === 'Numpad0'/);
+});
