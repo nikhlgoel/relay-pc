@@ -7,7 +7,7 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 
 - Resizable chat list (drag the divider, double-click to reset)
 - Frameless window; the header areas drag the window
-- Tray icon, close-to-tray, start with Windows, global show/hide shortcut
+- Tray icon, close-to-tray, start with Windows, optional global show/hide shortcut
 - Native notifications; clicking one brings the window forward
 - Unread badge on the taskbar icon (in your theme colour)
 - Offline? A "can't reach WhatsApp" screen appears and Relay reconnects by itself
@@ -66,7 +66,7 @@ npm run dist       # installer + portable build in dist/
 |---|---|
 | `Ctrl` `+` / `-` / `0` | Zoom in / out / reset |
 | `F11` | Fullscreen |
-| `Ctrl+Shift+W` | Show or hide from anywhere |
+| `Ctrl+Alt+W` | Show or hide from anywhere (off by default; tray menu > Global show/hide shortcut) |
 | `Ctrl+W` | Hide to tray |
 | `Ctrl+R` | Reload |
 

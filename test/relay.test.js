@@ -82,7 +82,8 @@ test('edge: nothing automated may touch the real desktop', () => {
     const i = main.indexOf(needle);
     assert.ok(i > 0, needle);
   }
-  assert.match(main, /if \(!process\.env\.RELAY_TEST\) globalShortcut/);
+  assert.match(main, /function applyGlobalHotkey\(\) \{\s*if \(process\.env\.RELAY_TEST\) return;/);
+  assert.match(main, /globalHotkey: false/, 'the system-wide shortcut must be off unless the user switches it on');
   assert.match(main, /process\.env\.RELAY_TEST \|\| !Notification\.isSupported\(\)/);
 });
 
@@ -147,4 +148,19 @@ test('the setup kit finds an installed Relay by the GUID electron-builder derive
   const ps = fs.readFileSync(path.join(__dirname, '..', 'tools', 'setup-kit', 'Install-Relay.ps1'), 'utf8');
   assert.ok(ps.includes(guid), 'Install-Relay.ps1 does not mention ' + guid);
   assert.equal(JSON.parse(read('../package.json')).build.appId, 'com.nikhlgoel.relay');
+});
+
+test('regression: "start minimized" applies only to a start by Windows, never to a launch by hand', () => {
+  const main = read('main.js');
+  assert.match(main, /process\.argv\.includes\('--autostart'\)/);
+  assert.match(main, /const startHidden = \(\) => Boolean\(store\.get\('startMinimized'\)\) && startedByWindows/);
+  assert.ok(!/!store\.get\('startMinimized'\)\) \{?\s*showMain/.test(main), 'the window must not stay hidden on a manual start');
+  assert.match(main, /--autostart/);
+});
+
+test('regression: no system-wide hotkey is registered unless the user turns it on', () => {
+  const main = read('main.js');
+  const calls = [...main.matchAll(/globalShortcut\.register\(/g)].length;
+  assert.equal(calls, 1, 'one registration, inside applyGlobalHotkey');
+  assert.match(main, /if \(!store\.get\('globalHotkey'\)\) return;\s*\n\s*if \(!globalShortcut\.register/);
 });

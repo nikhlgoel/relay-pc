@@ -602,7 +602,11 @@ function fitSideDrawer() {
   if (!d || !side) return;
   const dr = d.getBoundingClientRect(), sr = side.getBoundingClientRect();
   if (!dr.width || !sr.width) return;
-  const want = Math.round(sr.right - dr.left);
+  // The chat list can reach further right than #side itself (its time and pin columns showed beside the drawer): use the larger edge.
+  const list = document.getElementById('pane-side');
+  const lr = list && list.getBoundingClientRect();
+  const right = Math.max(sr.right, lr && lr.width ? lr.right : 0);
+  const want = Math.round(right - dr.left);
   const off = () => { if (d.dataset.relayFit !== undefined) { for (const p of ['flex', 'width', 'max-width']) d.style.removeProperty(p); delete d.dataset.relayFit; } };
   if (want > 346 && want < innerWidth * 0.8) {                       // wider than WhatsApp's own 342px drawer
     if (Math.abs(dr.width - want) > 2) {
@@ -2029,10 +2033,11 @@ function installRelayPanel() {
 // ===========================================================================
 function hookClipboardFiles() {
   let busy = false;
-  window.addEventListener('paste', async (e) => {
-    if (!e.isTrusted || busy) return;                                       // a real Ctrl+V or menu paste only - never one a script made up
-    const cd = e.clipboardData;
-    if (cd && ((cd.files && cd.files.length) || [...(cd.types || [])].some((t) => /^(text\/|image\/)/.test(t)))) return;
+  let lastPasteAt = 0;
+
+  /** Asks Windows for the copied files and hands them to WhatsApp as an ordinary paste of File objects. */
+  async function deliver() {
+    if (busy) return;
     busy = true;
     try {
       const { files, skipped } = (await ipcRenderer.invoke('clipboard:get-files')) || {};
@@ -2049,6 +2054,31 @@ function hookClipboardFiles() {
     } finally {
       busy = false;
     }
+  }
+
+  window.addEventListener('paste', (e) => {
+    lastPasteAt = Date.now();
+    if (!e.isTrusted || busy) return;                                       // a real Ctrl+V or menu paste only - never one a script made up
+    const cd = e.clipboardData;
+    if (cd && ((cd.files && cd.files.length) || [...(cd.types || [])].some((t) => /^(text\/|image\/)/.test(t)))) return;
+    deliver();
+  }, true);
+
+  // Ctrl+V that produces no paste event at all (focus is not in the message box, or the page swallowed it): the files are
+  // still fetched, so a copied file can always be pasted into the open chat.
+  window.addEventListener('keydown', (e) => {
+    if (!e.isTrusted || e.altKey || e.repeat) return;
+    const v = (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) || (e.shiftKey && e.key === 'Insert');
+    if (!v) return;
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;          // a text field of Relay's or WhatsApp's own (search box, proxy field)
+    const at = Date.now();
+    setTimeout(() => {
+      if (lastPasteAt >= at || busy) return;                                // the page did get a paste event: nothing to add
+      if (!document.querySelector('#main footer [contenteditable="true"]')) return;     // no chat open
+      console.warn('[Relay] Ctrl+V reached the page without a paste event; reading the clipboard directly');
+      deliver();
+    }, 250);
   }, true);
 }
 

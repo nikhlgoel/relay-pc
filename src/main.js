@@ -57,6 +57,7 @@ const store = openStore({
     maximized: false,
     minimizeToTray: true,
     startMinimized: false,
+    globalHotkey: false,
     zoom: 0,
     paneWidth: 0,
     hardwareAcceleration: true,
@@ -86,7 +87,7 @@ const store = openStore({
 // Hand-edited or damaged settings: any value of the wrong type is dropped (the default applies).
 (function sanitizeStore() {
   const shapes = {
-    bounds: 'object', callBounds: 'object', maximized: 'boolean', minimizeToTray: 'boolean', startMinimized: 'boolean',
+    bounds: 'object', callBounds: 'object', maximized: 'boolean', minimizeToTray: 'boolean', startMinimized: 'boolean', globalHotkey: 'boolean', loginArgsMigrated: 'boolean',
     zoom: 'number', paneWidth: 'number', hardwareAcceleration: 'boolean', privacyBlur: 'boolean', lowPower: 'boolean',
     blockTelemetry: 'boolean', enhanceCamera: 'boolean', enhanceMic: 'boolean', sharpVideo: 'boolean', proxy: 'string', waLang: 'string', webCalling: 'boolean',
     lazyCallEngine: 'boolean', autoRecord: 'boolean', noiseSuppression: 'boolean', dnd: 'boolean', translateAll: 'boolean',
@@ -235,9 +236,13 @@ if (!process.env.RELAY_TEST) {
 /** What Windows should start at login. A development run needs the app folder too, a portable build its own file. */
 function loginItem(openAtLogin) {
   const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-  const args = (app.isPackaged ? [] : [app.getAppPath()]).concat(currentProfile === 'default' ? [] : ['--profile=' + currentProfile]);
+  const args = (app.isPackaged ? [] : [app.getAppPath()]).concat(currentProfile === 'default' ? [] : ['--profile=' + currentProfile], ['--autostart']);
   return { openAtLogin, path: exe, args, name: currentProfile === 'default' ? undefined : 'Relay-' + currentProfile };
 }
+
+// "Start minimized" is for when Windows starts Relay at sign-in. A launch by hand (Start menu, shortcut) always shows the window.
+const startedByWindows = process.argv.includes('--autostart');
+const startHidden = () => Boolean(store.get('startMinimized')) && startedByWindows;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -508,13 +513,13 @@ function createWindow() {
     mainWindow.show();
   };
   mainWindow.once('ready-to-show', () => {
-    if (!store.get('startMinimized')) showMain();
+    if (!startHidden()) showMain();
     const z = store.get('zoom');
     if (z) mainWindow.webContents.setZoomLevel(z);
   });
 
   setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !store.get('startMinimized')) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !startHidden()) {
       showMain();
     }
   }, 1500);
@@ -952,6 +957,19 @@ function createTray() {
   refreshTrayMenu();
 }
 
+/** A system-wide shortcut takes that key combination away from every other program, so it is off unless switched on in the tray menu. */
+function applyGlobalHotkey() {
+  if (process.env.RELAY_TEST) return;
+  const combo = 'CommandOrControl+Alt+W';
+  try { globalShortcut.unregister(combo); } catch (e) { /* not registered */ }
+  if (!store.get('globalHotkey')) return;
+  if (!globalShortcut.register(combo, toggleWindow)) {
+    store.set('globalHotkey', false);
+    showBox({ type: 'info', title: 'Relay', message: 'Another program already uses Ctrl+Alt+W, so the shortcut was not turned on.' });
+    refreshTrayMenu();
+  }
+}
+
 function toggleWindow() {
   if (mainWindow && mainWindow.isVisible() && mainWindow.isFocused()) {
     mainWindow.hide();
@@ -1020,7 +1038,8 @@ function refreshTrayMenu() {
     { label: 'Open Relay', click: showWindow },
     { type: 'separator' },
     toggle('Close to tray', 'minimizeToTray'),
-    toggle('Start minimized', 'startMinimized'),
+    toggle('Start minimized (when Windows starts Relay)', 'startMinimized'),
+    toggle('Global show/hide shortcut (Ctrl+Alt+W)', 'globalHotkey', false, applyGlobalHotkey),
     {
       label: 'Start with Windows',
       type: 'checkbox',
@@ -1797,7 +1816,15 @@ app.whenReady().then(async () => {
     } catch {}
   }
 
-  if (!process.env.RELAY_TEST) globalShortcut.register('CommandOrControl+Shift+W', toggleWindow);
+  applyGlobalHotkey();
+  // Windows start-up entries made by an older Relay lack the marker that tells a start-up launch from a launch by hand.
+  if (app.isPackaged && !process.env.RELAY_TEST && !store.get('loginArgsMigrated')) {
+    store.set('loginArgsMigrated', true);
+    try {
+      const old = { path: loginItem(false).path, args: (app.isPackaged ? [] : [app.getAppPath()]).concat(currentProfile === 'default' ? [] : ['--profile=' + currentProfile]) };
+      if (app.getLoginItemSettings(old).openAtLogin) app.setLoginItemSettings(loginItem(true));
+    } catch (e) { /* the entry stays as it was */ }
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
