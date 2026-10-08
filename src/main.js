@@ -94,7 +94,7 @@ const store = openStore({
     translateConsent: 'object', translateKeys: 'object', translateKeyEnc: 'string', appIdentity: 'string',
     captionLang: 'string', captionSize: 'string', captionOriginal: 'boolean', captionModel: 'string', captionFrom: 'string',
     captionGpu: 'number', captionConsent: 'object',
-    voiceIn: 'boolean', voiceOut: 'boolean', voiceHear: 'string', voiceThey: 'string', voiceDuck: 'number', voiceConsent: 'object'
+    voiceIn: 'boolean', voiceOut: 'boolean', voiceHear: 'string', voiceThey: 'string', voiceDuck: 'number', voiceConsent: 'object', addonsAsked: 'boolean'
   };
   const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
   for (const [key, want] of Object.entries(shapes)) {
@@ -600,7 +600,7 @@ function createWindow() {
       if (reachable) { offline = false; mainWindow.loadURL(WHATSAPP_URL); } else probe();
     }, Math.min(3000 * 1.6 ** loadRetries++, 30000));
   };
-  mainWindow.webContents.once('did-finish-load', () => { if (!offline) setTimeout(askWhatsAppLanguage, 4000); });
+  mainWindow.webContents.once('did-finish-load', () => { if (!offline) setTimeout(() => askWhatsAppLanguage().then(offerAddons).catch(() => {}), 4000); });
   mainWindow.webContents.on('did-finish-load', () => {
     if (!offline) loadRetries = 0;
     if (offline) {
@@ -1540,6 +1540,26 @@ const WA_LANG_TEXT = {
   zh: ['WhatsApp 语言', '将 WhatsApp 设为英文？', 'Relay 在通话中的附加功能（字幕、录音、键盘快捷键、返回键）需要 WhatsApp 使用英文界面。您可以随时在 Relay 面板中更改。', ['使用英文', '保持我的语言']],
   ru: ['Язык WhatsApp', 'Использовать английский в WhatsApp?', 'Дополнительные функции Relay во время звонков (субтитры, запись, горячие клавиши, кнопка «назад») работают, когда WhatsApp на английском. Это можно изменить в любой момент в панели Relay.', ['Английский', 'Оставить мой язык']]
 };
+// Optional extras are not inside the installer or the zip (they are large); this offers them once, in the user's language.
+const ADDON_TEXT = {
+  en: ['Optional downloads', 'Download the speech model for live captions now?', 'It is about 60 MB, downloaded once from Hugging Face (or its mirror if that is blocked) and checked before use. You can get it, and the more accurate 190 MB model, any time in the Relay panel under Add-ons.', ['Download now', 'Later']],
+  zh: ['可选下载', '现在下载实时字幕所需的语音模型吗？', '约 60 MB，只需下载一次（来自 Hugging Face，若被屏蔽则使用镜像），使用前会校验。之后也可随时在 Relay 面板的“附加组件”中下载它以及更精确的 190 MB 模型。', ['立即下载', '以后再说']],
+  ru: ['Дополнительные загрузки', 'Скачать модель речи для живых субтитров сейчас?', 'Около 60 МБ, загружается один раз с Hugging Face (или с зеркала, если сайт заблокирован) и проверяется перед использованием. Её и более точную модель на 190 МБ можно скачать в любой момент в панели Relay, раздел «Дополнения».', ['Скачать', 'Позже']]
+};
+async function offerAddons() {
+  if (process.env.RELAY_TEST || store.get('addonsAsked') || !mainWindow || mainWindow.isDestroyed() || !captions) return;
+  store.set('addonsAsked', true);
+  if (captions.modelReady()) return;
+  const t = ADDON_TEXT[osLanguage()] || ADDON_TEXT.en;
+  const { response } = await showBox(mainWindow, { type: 'question', title: t[0], message: t[1], detail: t[2], buttons: t[3], defaultId: 0, cancelId: 1 });
+  if (response !== 0) return;
+  const send = (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', 'addon-status', d); };
+  try {
+    await captions.downloadSpeechModel((pct) => send({ id: 'fast', pct }));
+    send({ id: 'fast', pct: 1, done: true });
+  } catch (err) { send({ id: 'fast', error: String((err && err.message) || err) }); }
+}
+
 async function askWhatsAppLanguage() {
   if (process.env.RELAY_TEST || store.get('waLang') || !mainWindow || mainWindow.isDestroyed()) return;
   const code = String(app.getLocale() || 'en').slice(0, 2).toLowerCase();

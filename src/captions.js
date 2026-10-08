@@ -403,6 +403,21 @@ function setupCaptions(ctx) {
     return state();
   });
 
+  // Optional downloads from the Relay panel and the first-run offer: the speech models, one at a time.
+  handle('relay:addon-download', async (_e, id) => {
+    if (!MODELS[id]) throw new Error('Unknown download');
+    if (modelReady(id)) return state();
+    try {
+      await downloadModel(id, (pct) => event('addon-status', { id, pct }));
+    } catch (err) {
+      event('addon-status', { id, error: String((err && err.message) || err) });
+      throw new Error(/internet/i.test(err.message) ? 'No internet connection - try again when you are online' : err.message);
+    }
+    event('addon-status', { id, pct: 1, done: true });
+    pushState();
+    return state();
+  });
+
   handle('relay:caption-start', () => {
     if (starting) return starting;
     starting = (async () => {

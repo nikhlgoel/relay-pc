@@ -161,6 +161,33 @@
     ];
   }
 
+  // --- add-ons: the larger optional downloads, kept out of the installer and the zip ------------------------------
+  const addonProgress = {};                                   // model id -> 0..1 while downloading
+  R.on('addon-status', (m) => {
+    if (!m || !m.id) return;
+    if (m.error) { delete addonProgress[m.id]; R.toast(m.error); }
+    else if (m.done) { delete addonProgress[m.id]; R.toast('Downloaded'); }
+    else addonProgress[m.id] = m.pct || 0;
+    render();
+  });
+  function addonsSection(s) {
+    const c = s.captions;
+    if (!c || !c.models) return [];
+    const note = { fast: 'Live captions and recording transcripts', accurate: 'Better for Chinese, Russian, Hindi; needs a faster graphics card' };
+    return Object.keys(c.models).map((id) => {
+      const m = c.models[id];
+      const busy = id in addonProgress;
+      const control = m.ready
+        ? el('span', { class: 'relay-row-s', text: 'Installed' })
+        : el('button', {
+          type: 'button', class: 'relay-link', disabled: busy,
+          text: busy ? Math.round(addonProgress[id] * 100) + '%' : 'Download',
+          on: { click: () => { addonProgress[id] = 0; render(); R.call('addon-download', id).catch((e) => { delete addonProgress[id]; fail(e); render(); }); } }
+        });
+      return row('caption', 'Speech model: ' + m.label + ' (' + m.mb + ' MB)', note[id] || '', control);
+    });
+  }
+
   function languageSection(s) {
     const cur = s.waLang === 'en' ? 'en' : 'auto';
     return [
@@ -242,6 +269,7 @@
           ...voiceRows(s),
           s.captions ? row('caption', 'Captions language', 'Live captions: tap CC in a call', captionLanguage(s)) : null,
           el('div', { class: 'relay-note relay-note-dim', text: 'In a call: M mute · V camera · S share screen · F full screen · R record · C captions' })),
+        section('Add-ons', ...addonsSection(s)),
         section('Language', ...languageSection(s)),
         section('Network', ...networkSection(s)),
         section('Quick replies', ...quickReplies(s))),
