@@ -175,7 +175,7 @@
     const c = s.captions;
     if (!c || !c.models) return [];
     const note = { fast: 'Live captions and recording transcripts', accurate: 'Better for Chinese, Russian, Hindi; needs a faster graphics card' };
-    return Object.keys(c.models).map((id) => {
+    const speech = Object.keys(c.models).map((id) => {
       const m = c.models[id];
       const busy = id in addonProgress;
       const control = m.ready
@@ -187,6 +187,25 @@
         });
       return row('caption', 'Speech model: ' + m.label + ' (' + m.mb + ' MB)', note[id] || '', control);
     });
+    // Live voice translation: the translator and the voices (about 3 GB), so the first translated call does not have to wait for them.
+    const v = s.voice;
+    if (v && v.available !== false) {
+      const busy = 'voice' in addonProgress;
+      const control = v.mt && v.voice
+        ? el('span', { class: 'relay-row-s', text: 'Installed' })
+        : el('button', {
+          type: 'button', class: 'relay-link', disabled: busy,
+          text: busy ? Math.round(addonProgress.voice * 100) + '%' : 'Download',
+          on: {
+            click: () => {
+              addonProgress.voice = 0; render();
+              R.call('voice-prepare').then((r) => { if (!r || !r.ok) { delete addonProgress.voice; render(); } }).catch((e) => { delete addonProgress.voice; fail(e); render(); });
+            }
+          }
+        });
+      speech.push(row('translate', 'Live voice translation (about 3 GB)', 'Translator and voices, for translating calls out loud', control));
+    }
+    return speech;
   }
 
   function languageSection(s) {

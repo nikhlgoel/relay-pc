@@ -117,7 +117,12 @@
         if (res && res.pcm) { V.failures = 0; V.ordered[kind].put(seq, { ...res, kind }); }
         else {
           V.ordered[kind].put(seq, null);
-          if (kind === 'out' && res && res.skipped === 'same-language') sendOwnVoice();       // you spoke their language: let your own voice through
+          // Nothing was made of what you said (their language, no voice for it, nothing to say): the other person must still hear YOU.
+          if (kind === 'out' && res && ['same-language', 'cannot-speak', 'unknown-language', 'empty', 'no-notice'].includes(res.skipped)) sendOwnVoice();
+          if (kind === 'out' && res && res.skipped === 'cannot-speak' && !V.toldCannot) {
+            V.toldCannot = true;
+            R.toast('Your voice can only be translated into English, Hindi, Chinese, Russian or Spanish');
+          }
         }
       })
       .catch((err) => { if (V.on && V.ordered[kind] === ordered) { ordered.put(seq, null); noteFailure(); } })
@@ -241,6 +246,7 @@
       V.seq.in = V.seq.out = 0;
       V.flight.in = V.flight.out = 0;
       V.failures = 0;
+      V.toldCannot = false;
       V.on = true;
       const noMicChain = st.out !== false && !window.__relayVoiceOut;
       const results = await Promise.allSettled([

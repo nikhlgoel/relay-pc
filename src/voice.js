@@ -94,6 +94,8 @@ function setupVoice(ctx) {
     return { mt: has('translategemma'), voice: has('tone_color') || has('openvoice') };
   };
 
+  let progressSink = null;               // where the engine's download progress goes (the Add-ons row, or the call's own toast)
+
   function startEngine() {
     if (engine) return engine.readyPromise;
     const proc = ctx.spawnEngine
@@ -105,7 +107,7 @@ function setupVoice(ctx) {
         if (!m) return;
         if (m.type === 'ready') { e.ready = true; e.features = m.features; resolve(e); }
         else if (m.type === 'init-error') reject(new Error(m.message));
-        else if (m.type === 'progress') event('voice-status', { phase: 'download', what: m.what, pct: m.pct });
+        else if (m.type === 'progress') { if (progressSink) progressSink(m); else event('voice-status', { phase: 'download', what: m.what, pct: m.pct }); }
         else if (m.type === 'ensured' || m.type === 'ensure-error') {
           const w = e.waiters.get(m.what);
           if (w) { e.waiters.delete(m.what); if (m.type === 'ensured') w.resolve(); else w.reject(new Error(m.message)); }
@@ -179,7 +181,7 @@ function setupVoice(ctx) {
       'Nothing is recorded and no audio leaves your computer. A small profile of your own voice is kept on this PC (delete it any time in the Relay panel); the other person\'s voice is only held in memory during the call.\n\n' +
       'The other person hears a spoken notice that the call is being translated automatically. A translation can be wrong or sound unlike the speaker - do not rely on it for anything important. ' +
       'Use it only where everyone on the call is fine with it, and never to pass yourself off as someone else.\n\n' +
-      'The first time, about 3 GB of models are downloaded (translator and voices). The translator is Google Gemma, used under the Gemma Terms of Use (ai.google.dev/gemma/terms); the voices are Kokoro and Piper (open licences) with OpenVoice.';
+      'The first time, about 3 GB of models are downloaded (speech recognition, translator and voices). The translator is Google Gemma, used under the Gemma Terms of Use (ai.google.dev/gemma/terms); the voices are Kokoro and Piper (open licences) with OpenVoice.';
     const { response, checkboxChecked } = await showBox({
       type: 'question', title: 'Live voice translation', message: 'Translate your calls out loud?', detail,
       buttons: ['Turn on', 'Cancel'], defaultId: 0, cancelId: 1,
@@ -191,12 +193,20 @@ function setupVoice(ctx) {
     return true;
   }
 
+  // Speech to text decides what gets translated: the larger model is clearly more accurate (Chinese characters, Russian numbers, Spanish
+  // names), so voice translation uses it unless the user chose a speech model themselves. Captions share the same engine and setting.
+  const preferAccurateSpeech = () => { if (!store.get('captionModel')) { store.set('captionModel', 'accurate'); pushState(); } };
+
   // --- translating text -----------------------------------------------------------------
   async function translateText(text, from, to) {
     if (!text || baseLang(from) === baseLang(to)) return text;
     const s = session;
     if (s && s.localMt && !modelsMissingMt && modelsPresent().mt) {
       try { return (await job('translate', { text, from: from || 'auto', to })).text; } catch (err) {
+        // The speech model can name languages the translator has no code for (Cantonese "yue", Nynorsk ...): let the translator work out the source itself.
+        if (/Unsupported language/i.test(err.message) && from && from !== 'auto') {
+          try { return (await job('translate', { text, from: 'auto', to })).text; } catch (err2) { err = err2; }
+        }
         if (/no translator engine|not found|missing|ENOENT|download/i.test(err.message)) s.localMt = false;       // not usable: Google, if allowed
         else throw err;
       }
@@ -272,7 +282,11 @@ function setupVoice(ctx) {
       if (!target) return { skipped: 'unknown-language', text: r.text };
       if (baseLang(spoken) === baseLang(target)) return { skipped: 'same-language', text: r.text, lang: spoken };
 
+      // The engine can only SPEAK a few languages. If the other person speaks anything else, say so (once, on screen) and leave your own voice alone.
+      if (!LANGS.includes(target)) return { skipped: 'cannot-speak', text: r.text, lang: target };
+
       const translated = await translateText(r.text, spoken || 'auto', target);
+      if (!translated || !String(translated).trim()) return { skipped: 'empty', text: r.text, lang: spoken };
       const norm = (t) => String(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
       if (norm(translated) === norm(r.text)) return { skipped: 'same-language', text: r.text, lang: spoken };
       const emb = direction === 'in' ? s.embIn : s.embOut;
@@ -280,14 +294,19 @@ function setupVoice(ctx) {
 
       // what the other person hears first: a spoken notice, in their language, in your voice
       if (direction === 'out' && !s.announced) {
-        s.announced = true;
         try {
           const note = await translateText(DISCLOSURE, 'en', target);
           const n = await job('synth', { text: note, lang: target, emb: emb ? toArrayBuffer(emb) : null });
+          if (!n.pcm || !n.pcm.byteLength) throw new Error('empty notice');
           out.notice = { pcm: n.pcm, rate: n.rate, text: note };
-        } catch (err) { /* the call goes on; the on-screen icon is the other half of the notice */ }
+          s.announced = true;
+        } catch (err) {
+          // Without the spoken notice the other person must not hear a translation: your own voice keeps going and the next sentence tries again.
+          return { skipped: 'no-notice', text: r.text, lang: spoken };
+        }
       }
       const a = await job('synth', { text: translated, lang: target, emb: emb ? toArrayBuffer(emb) : null });
+      if (!a.pcm || !a.pcm.byteLength) return { skipped: 'empty', text: r.text, lang: spoken };
       out.pcm = a.pcm;
       out.rate = a.rate;
       s.failures = 0;
@@ -325,6 +344,7 @@ function setupVoice(ctx) {
       clearTimeout(idleTimer);                // an earlier call's idle timer must not stop the engine while this one loads it
       restartNeeded = false;
       if (!consent() && !(await askConsent())) return { ok: false, reason: 'declined' };
+      preferAccurateSpeech();
       try {
         event('voice-status', { phase: 'loading' });
         if (!speechReady()) {
@@ -355,6 +375,39 @@ function setupVoice(ctx) {
       }
     })().finally(() => { starting = null; });
     return starting;
+  });
+
+  // "Download now" in the Relay panel's Add-ons: everything live translation needs, without a call, so the first call does not wait.
+  let preparing = null;
+  handle('relay:voice-prepare', () => {
+    if (preparing) return preparing;
+    preparing = (async () => {
+      clearTimeout(idleTimer);
+      if (!consent() && !(await askConsent())) return { ok: false, reason: 'declined' };
+      preferAccurateSpeech();
+      const send = (d) => event('addon-status', { id: 'voice', ...d });
+      try {
+        send({ pct: 0 });
+        if (!speechReady()) await downloadSpeech((pct) => send({ pct: pct * 0.04 }));
+        await startEngine();
+        progressSink = (m) => send({ pct: m.what === 'mt' ? 0.04 + 0.8 * (m.pct || 0) : 0.84 + 0.16 * (m.pct || 0) });
+        const c = consent();
+        if (c && c.google) await ensureModels('mt').catch(() => {});
+        else await ensureModels('mt');
+        await ensureModels('voice');
+        send({ pct: 1, done: true });
+        pushState();
+        return { ok: true };
+      } catch (err) {
+        const message = /internet|ENOTFOUND|fetch failed|ERR_/i.test(err.message) ? 'No internet connection - try again when you are online' : String(err.message || err).slice(0, 160);
+        send({ error: message });
+        return { ok: false, reason: 'error', message };
+      } finally {
+        progressSink = null;
+        if (!session) armIdle();
+      }
+    })().finally(() => { preparing = null; });
+    return preparing;
   });
 
   handle('relay:voice-stop', () => {

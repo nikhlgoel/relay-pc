@@ -1992,7 +1992,7 @@ const RELAY_CHANNELS = new Set([
   'state', 'set', 'translate-provider', 'translate-consent', 'key-prompt', 'key-clear',
   'translate', 'snippets', 'action', 'rnnoise',
   'caption-set', 'caption-start', 'caption-stop', 'caption-audio', 'proxy-set', 'wa-lang',
-  'context-hint', 'addon-download', 'transcribe-pick', 'transcribe-clip', 'transcribe-save', 'voice-set', 'voice-forget', 'voice-start', 'voice-stop', 'voice-clip'
+  'context-hint', 'addon-download', 'transcribe-pick', 'transcribe-clip', 'transcribe-save', 'voice-set', 'voice-forget', 'voice-prepare', 'voice-start', 'voice-stop', 'voice-clip'
 ]);
 
 function installRelayPanel() {

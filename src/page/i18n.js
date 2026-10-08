@@ -53,7 +53,9 @@
     'Speech is turned into text on this PC.': '语音在这台电脑上转换为文字。',
     'Listening…': '正在聆听…', 'Starting captions…': '正在启动字幕…', 'Loading speech model…': '正在加载语音模型…', 'Catching up...': '正在追赶…',
     'Turn on captions': '开启字幕', 'Turn off captions': '关闭字幕',
-    'Captions could not start': '无法启动字幕', 'Captions could not listen to this call': '字幕无法监听此通话',
+    'Your voice can only be translated into English, Hindi, Chinese, Russian or Spanish': '你的声音目前只能翻译成英语、印地语、中文、俄语或西班牙语',
+    'Live voice translation (about 3 GB)': '实时语音翻译（约 3 GB）', 'Translator and voices, for translating calls out loud': '翻译器和语音，用于朗读通话译文',
+    'Captions could not start': '无法启动字幕','Captions could not listen to this call': '字幕无法监听此通话',
     'Captions are falling behind. Try Accuracy: Fast in the caption settings (tap the caption label).': '字幕跟不上说话速度。请在字幕设置中将“准确度”改为“快速”（点击字幕标签）。'
   };
 
@@ -101,7 +103,9 @@
     'Speech is turned into text on this PC.': 'Речь преобразуется в текст на этом компьютере.',
     'Listening…': 'Слушаю…', 'Starting captions…': 'Запуск субтитров…', 'Loading speech model…': 'Загрузка модели речи…', 'Catching up...': 'Не успеваю…',
     'Turn on captions': 'Включить субтитры', 'Turn off captions': 'Выключить субтитры',
-    'Captions could not start': 'Не удалось запустить субтитры', 'Captions could not listen to this call': 'Субтитры не смогли прослушать этот звонок',
+    'Your voice can only be translated into English, Hindi, Chinese, Russian or Spanish': 'Ваш голос пока можно перевести только на английский, хинди, китайский, русский или испанский',
+    'Live voice translation (about 3 GB)': 'Живой голосовой перевод (около 3 ГБ)', 'Translator and voices, for translating calls out loud': 'Переводчик и голоса для озвучивания перевода звонков',
+    'Captions could not start': 'Не удалось запустить субтитры','Captions could not listen to this call': 'Субтитры не смогли прослушать этот звонок',
     'Captions are falling behind. Try Accuracy: Fast in the caption settings (tap the caption label).': 'Субтитры не успевают за речью. В настройках субтитров выберите «Точность: Быстро» (нажмите на метку субтитров).'
   };
 
