@@ -11,7 +11,7 @@
 
   const zh = {
     'Appearance': '外观', 'Chats': '聊天', 'Notifications': '通知', 'Calls': '通话', 'Language': '语言', 'Network': '网络',
-    'Quick replies': '快捷回复', 'Quick settings': '快捷设置', 'Recordings': '录音录像', 'About': '关于', 'Close': '关闭',
+    'Quick replies': '快捷回复', 'Quick settings': '快捷设置', 'Recordings': '录音录像', 'About': '关于', 'Diagnostics': '诊断', 'Save a report of recent problems to Documents': '将近期问题报告保存到“文档”', 'Saved Relay-diagnostics.txt to Documents': '已将 Relay-diagnostics.txt 保存到“文档”', 'Close': '关闭',
     'Dark': '深色', 'Light': '浅色', 'Theme': '主题',
     'WhatsApp reloads for a moment when you change it.': '更改后 WhatsApp 会短暂重新加载。',
     'Switching to the dark theme...': '正在切换到深色主题…', 'Switching to the light theme...': '正在切换到浅色主题…',
@@ -55,7 +55,7 @@
 
   const ru = {
     'Appearance': 'Оформление', 'Chats': 'Чаты', 'Notifications': 'Уведомления', 'Calls': 'Звонки', 'Language': 'Язык', 'Network': 'Сеть',
-    'Quick replies': 'Быстрые ответы', 'Quick settings': 'Быстрые настройки', 'Recordings': 'Записи', 'About': 'О программе', 'Close': 'Закрыть',
+    'Quick replies': 'Быстрые ответы', 'Quick settings': 'Быстрые настройки', 'Recordings': 'Записи', 'About': 'О программе', 'Diagnostics': 'Диагностика', 'Save a report of recent problems to Documents': 'Сохранить отчёт о недавних проблемах в «Документы»', 'Saved Relay-diagnostics.txt to Documents': 'Relay-diagnostics.txt сохранён в «Документы»', 'Close': 'Закрыть',
     'Dark': 'Тёмная', 'Light': 'Светлая', 'Theme': 'Тема',
     'WhatsApp reloads for a moment when you change it.': 'При смене темы WhatsApp ненадолго перезагрузится.',
     'Switching to the dark theme...': 'Включается тёмная тема…', 'Switching to the light theme...': 'Включается светлая тема…',

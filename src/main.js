@@ -608,6 +608,10 @@ function createWindow() {
         "(() => { const m = document.getElementById('mark'); if (m) m.style.backgroundImage = 'url(' + " + JSON.stringify(ICON_URI) + " + ')'; })()").catch(() => {});
     }
   });
+  mainWindow.webContents.on('console-message', (_e, level, message, _line, source) => {
+    if (level >= 2 && !/^https?:\/\/web\.whatsapp\.com.*(chat|message)/i.test(source || '')) diag(level === 3 ? 'error' : 'warn', message.replace(/\d{6,}/g, '#'));
+  });
+  mainWindow.webContents.on('render-process-gone', (_e, d) => diag('crash', d && d.reason));
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, _url, isMain) => {
     if (!isMain || code === -3) return;                // -3: a navigation that was replaced by another
     offline = true;
@@ -1534,6 +1538,22 @@ async function askWhatsAppLanguage() {
   if (response === 0) relaunchRelay();
 }
 
+// "Save diagnostics": what went wrong lately, without any chat text, for when something does not work on a PC I cannot see.
+const diagLog = [];                                          // recent page errors and failed loads (newest last)
+function diag(kind, text) { diagLog.push(new Date().toISOString().slice(11, 19) + ' ' + kind + ' ' + String(text).slice(0, 300)); if (diagLog.length > 200) diagLog.shift(); }
+async function saveDiagnostics() {
+  const lines = [
+    'Relay ' + app.getVersion() + ' | Electron ' + process.versions.electron + ' | Chromium ' + process.versions.chrome,
+    'Windows ' + require('os').release() + ' | locale ' + app.getLocale() + ' | packaged ' + app.isPackaged,
+    'proxy ' + (store.get('proxy') ? 'custom' : 'system') + ' | waLang ' + (store.get('waLang') || '-') + ' | GPU acceleration ' + store.get('hardwareAcceleration'),
+    '', 'Recent problems (no message text is recorded):', ...(diagLog.length ? diagLog : ['(none)'])
+  ];
+  const file = path.join(app.getPath('documents'), 'Relay-diagnostics.txt');
+  await fs.promises.writeFile(file, lines.join(String.fromCharCode(13, 10)), 'utf8');
+  if (!process.env.RELAY_TEST) shell.showItemInFolder(file);
+  return file;
+}
+
 let captions = null;
 hub = setupHub({
   relaunch: relaunchRelay,
@@ -1584,6 +1604,7 @@ handle('relay:action', (_e, name) => {
   if (name === 'open-recordings') return openRecordingsDir();
   if (name === 'choose-recordings') return chooseRecordingsDir();
   if (name === 'about') return showAbout();
+  if (name === 'diagnostics') return saveDiagnostics();
   if (name === 'get-openrouter-key') return openExternalSafe('https://openrouter.ai/keys');
   if (name === 'press-escape') {                                   // "back" from a mouse side button: a real Escape key press, which WhatsApp treats as its own shortcut
     if (!mainWindow || mainWindow.isDestroyed()) return;
