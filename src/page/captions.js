@@ -589,5 +589,5 @@
     drain();
   }, 600);
 
-  R.captions = { turnOn, turnOff, get on() { return S.on; }, _state: S };
+  R.captions = { turnOn, turnOff, get on() { return S.on; }, makeSegmenter, WORKLET, _state: S };
 })();

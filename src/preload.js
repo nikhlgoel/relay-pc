@@ -901,8 +901,56 @@ function hookCallRecording() {
       try { origConnect.call(node, d); } catch (e) { /* node already gone */ }
     }
 
+    // Live voice translation can turn the original call sound down while the translated voice speaks. For that, everything that
+    // plays to the speakers goes through one gain node per audio context (gain 1 = no change). disconnect() is mirrored.
+    const origDisconnect = AudioNode.prototype.disconnect;
+    const duckNodes = new WeakMap();             // AudioContext -> gain node in front of its destination
+    const duckedSources = new WeakSet();         // nodes whose connection to the destination went through that gain
+    const duckState = { level: 1 };
+    function duckFor(ctx) {
+      let g = duckNodes.get(ctx);
+      if (!g) {
+        g = ctx.createGain();
+        g.__relayOwn = true;
+        g.gain.value = duckState.level;
+        origConnect.call(g, ctx.destination);
+        duckNodes.set(ctx, g);
+      }
+      return g;
+    }
+    Object.defineProperty(window, '__relayDuck', { value: {
+      set(level, seconds) {
+        duckState.level = Math.max(0, Math.min(1, level));
+        // contexts are only reachable through the nodes seen so far
+        for (const ref of sources) {
+          const n = ref.deref();
+          const g = n && duckNodes.get(n.context);
+          if (g) g.gain.setTargetAtTime(duckState.level, g.context.currentTime, seconds || 0.08);
+        }
+      },
+      get level() { return duckState.level; }
+    }, enumerable: false });
+    AudioNode.prototype.disconnect = function (dest) {
+      try {
+        if (duckedSources.has(this) && (arguments.length === 0 || dest instanceof AudioDestinationNode)) {
+          if (arguments.length === 0) duckedSources.delete(this);
+          return arguments.length === 0 ? origDisconnect.call(this) : origDisconnect.call(this, duckNodes.get(this.context));
+        }
+      } catch (e) { /* fall through to the real thing */ }
+      return origDisconnect.apply(this, arguments);
+    };
+
     AudioNode.prototype.connect = function (dest) {
-      const result = origConnect.apply(this, arguments);
+      let result;
+      if (dest instanceof AudioDestinationNode && !this.__relayOwn && dest.context === this.context) {
+        try {
+          origConnect.call(this, duckFor(this.context), ...[].slice.call(arguments, 1));
+          duckedSources.add(this);
+          result = dest;
+        } catch (e) { result = origConnect.apply(this, arguments); }
+      } else {
+        result = origConnect.apply(this, arguments);
+      }
       try {
         const isOutput = dest instanceof AudioDestinationNode ||
           (dest instanceof MediaStreamAudioDestinationNode && !dest.__relayTap);
@@ -1375,6 +1423,30 @@ function hookMediaDevices() {
 
       const pair = { dry, wet };
       const dest = ctx.createMediaStreamDestination();
+      // Live voice translation (src/page/voice.js): the translated voice is mixed in here, and your own voice can be switched off.
+      const gate = ctx.createGain();
+      const synthIn = ctx.createGain();
+      const voiceOut = {
+        nextAt: 0, sources: new Set(),
+        passthrough(on) { gate.gain.setTargetAtTime(on ? 1 : 0, ctx.currentTime, 0.03); },
+        play(pcm, rate) {
+          const buf = ctx.createBuffer(1, pcm.length, rate);
+          buf.copyToChannel(pcm, 0);
+          const s = ctx.createBufferSource();
+          s.buffer = buf;
+          s.__relayOwn = true;
+          s.connect(synthIn);
+          const at = Math.max(ctx.currentTime + 0.02, voiceOut.nextAt);
+          s.start(at);
+          voiceOut.nextAt = at + buf.duration;
+          voiceOut.sources.add(s);
+          s.onended = () => voiceOut.sources.delete(s);
+          return voiceOut.nextAt - ctx.currentTime;
+        },
+        backlog() { return Math.max(0, voiceOut.nextAt - ctx.currentTime); },
+        clear() { for (const s of voiceOut.sources) { try { s.stop(); } catch (e) { /* ended */ } } voiceOut.sources.clear(); voiceOut.nextAt = 0; }
+      };
+      Object.defineProperty(window, '__relayVoiceOut', { value: voiceOut, configurable: true, enumerable: false });
       // Tell the call recorder this plumbing is Relay's own, not call audio.
       window.__relayBuildingAudio = true;
       try {
@@ -1386,7 +1458,9 @@ function hookMediaDevices() {
         presence.connect(compressor);
         compressor.connect(makeup);
         makeup.connect(limiter);
-        limiter.connect(dest);
+        limiter.connect(gate);
+        gate.connect(dest);
+        synthIn.connect(dest);
       } finally {
         window.__relayBuildingAudio = false;
       }
@@ -1398,6 +1472,7 @@ function hookMediaDevices() {
         if (rnn) { try { rnn.port.postMessage('destroy'); } catch {} rnn.disconnect(); }
         src.disconnect();
         limiter.disconnect();
+        if (window.__relayVoiceOut === voiceOut) { voiceOut.clear(); try { delete window.__relayVoiceOut; } catch (e) { /* ignore */ } }
         // Release the audio device when the last call / recording is over.
         if (--chains === 0 && audioCtx) {
           audioCtx.close().catch(() => {});
@@ -1901,7 +1976,8 @@ ipcRenderer.invoke('media:prefs')
 const RELAY_CHANNELS = new Set([
   'state', 'set', 'translate-provider', 'translate-consent', 'key-prompt', 'key-clear',
   'translate', 'snippets', 'action', 'rnnoise',
-  'caption-set', 'caption-start', 'caption-stop', 'caption-audio', 'proxy-set', 'wa-lang'
+  'caption-set', 'caption-start', 'caption-stop', 'caption-audio', 'proxy-set', 'wa-lang',
+  'voice-set', 'voice-forget', 'voice-start', 'voice-stop', 'voice-clip'
 ]);
 
 function installRelayPanel() {

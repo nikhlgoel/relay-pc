@@ -141,6 +141,26 @@
     ];
   }
 
+  /** Live voice translation: what to translate and into which language (the call button itself is on the call, or key T). */
+  function voiceRows(s) {
+    const v = s.voice;
+    if (!v) return [];
+    let names = null;
+    try { names = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }); } catch (e) { /* codes are shown instead */ }
+    const nm = (c) => (names && names.of(c)) || c;
+    const pick = (label, value, extra, name) => el('select', {
+      class: 'relay-select', attrs: { 'aria-label': label }, on: { change: (e) => R.call('voice-set', name, e.target.value).catch(fail) }
+    }, ...extra, ...v.languages.map((c) => el('option', { value: c, text: nm(c), selected: c === value })));
+    return [
+      row('translate', 'Live voice translation', 'Press T in a call. Speaks the translation in a copy of the speaker voice', null),
+      row('translate', 'I want to hear', '', pick('I want to hear', v.hear, [], 'hear')),
+      row('translate', 'They should hear', '', pick('They should hear', v.they, [el('option', { value: 'auto', text: R.t('Automatic'), selected: v.they === 'auto' })], 'they')),
+      row('translate', 'Translate what they say', '', switchEl(v.in !== false, (x) => R.call('voice-set', 'in', x))),
+      row('translate', 'Translate my voice', '', switchEl(v.out !== false, (x) => R.call('voice-set', 'out', x))),
+      v.myVoice ? el('div', { class: 'relay-note-a' }, el('button', { type: 'button', class: 'relay-link', text: 'Forget my voice', on: { click: () => R.call('voice-forget').then(() => R.toast('Your voice profile was deleted')).catch(fail) } })) : null
+    ];
+  }
+
   function languageSection(s) {
     const cur = s.waLang === 'en' ? 'en' : 'auto';
     return [
@@ -219,6 +239,7 @@
           row('video', 'Sharper video', 'Clearer picture from the people you call', switchEl(s.sharpVideo !== false, setting('sharpVideo'))),
           row('mic', 'Voice clarity', 'Levelling and EQ for your voice', switchEl(s.mic, setting('mic'))),
           row('record', 'Record calls automatically', 'Saved to your Videos folder', switchEl(s.autoRecord, setting('autoRecord'))),
+          ...voiceRows(s),
           s.captions ? row('caption', 'Captions language', 'Live captions: tap CC in a call', captionLanguage(s)) : null,
           el('div', { class: 'relay-note relay-note-dim', text: 'In a call: M mute · V camera · S share screen · F full screen · R record · C captions' })),
         section('Language', ...languageSection(s)),

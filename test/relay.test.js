@@ -27,7 +27,7 @@ test('main.js delivers exactly the page modules that exist, core first', () => {
 test('bridge channels, page calls and main handlers agree', () => {
   const channels = new Set(
     [...(/RELAY_CHANNELS = new Set\(\[([\s\S]*?)\]\)/.exec(read('preload.js'))[1]).matchAll(/'([^']+)'/g)].map((m) => m[1]));
-  const handlers = new Set([...(read('main.js') + read('hub.js') + read('captions.js')).matchAll(/handle\('relay:([\w-]+)'/g)].map((m) => m[1]));
+  const handlers = new Set([...(read('main.js') + read('hub.js') + read('captions.js') + read('voice.js')).matchAll(/handle\('relay:([\w-]+)'/g)].map((m) => m[1]));
   for (const c of channels) assert.ok(handlers.has(c), 'no handler for relay:' + c);
   for (const h of handlers) assert.ok(channels.has(h), 'relay:' + h + ' is not reachable from the page');
 

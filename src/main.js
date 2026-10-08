@@ -16,6 +16,7 @@ const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 const { setupHub, cleanProxy } = require('./hub');
 const { setupCaptions } = require('./captions');
+const { setupVoice } = require('./voice');
 const {
   isWhatsAppWebUrl, isWhatsAppOwnedUrl, deepLinkToWebUrl, shouldOpenExternally
 } = require('./urls');
@@ -92,7 +93,8 @@ const store = openStore({
     snippets: 'array', recordingsDir: 'string', recordingConsentAck: 'boolean', translateChoice: 'string',
     translateConsent: 'object', translateKeys: 'object', translateKeyEnc: 'string', appIdentity: 'string',
     captionLang: 'string', captionSize: 'string', captionOriginal: 'boolean', captionModel: 'string', captionFrom: 'string',
-    captionGpu: 'number', captionConsent: 'object'
+    captionGpu: 'number', captionConsent: 'object',
+    voiceIn: 'boolean', voiceOut: 'boolean', voiceHear: 'string', voiceThey: 'string', voiceDuck: 'number', voiceConsent: 'object'
   };
   const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
   for (const [key, want] of Object.entries(shapes)) {
@@ -1450,7 +1452,7 @@ function osLanguage() {
   if (process.env.RELAY_TEST && process.env.RELAY_TEST_OSLANG) return process.env.RELAY_TEST_OSLANG;      // tests only
   try { return String((app.getPreferredSystemLanguages()[0] || app.getLocale() || 'en')).slice(0, 2).toLowerCase(); } catch (e) { return 'en'; }
 }
-const PAGE_MODULES = ['i18n', 'core', 'translate', 'hub', 'calls', 'captions', 'nav', 'video', 'scroll'];
+const PAGE_MODULES = ['i18n', 'core', 'translate', 'hub', 'calls', 'captions', 'voice', 'nav', 'video', 'scroll'];
 ipcMain.on('page:src', (e) => {
   if (process.env.RELAY_TEST && process.env.RELAY_TEST_NO_MODULES) { e.returnValue = ''; return; }      // tests only: "is it Relay or is it WhatsApp?"
   e.returnValue = fromWhatsApp(e)
@@ -1555,6 +1557,7 @@ async function saveDiagnostics() {
 }
 
 let captions = null;
+let voice = null;
 hub = setupHub({
   relaunch: relaunchRelay,
   applyProxy,
@@ -1564,7 +1567,7 @@ hub = setupHub({
   },
   showBox: (opts) => showBox(mainWindow, opts),
   promptKey: promptForKey,
-  extraState: () => (captions ? { captions: captions.state() } : {}),
+  extraState: () => ({ ...(captions ? { captions: captions.state() } : {}), ...(voice ? { voice: voice.state() } : {}) }),
   afterChange: (name) => {
     if (name === 'dnd') applyDnd();
     if (name === 'autoRecord') onAutoRecordToggled();
@@ -1584,6 +1587,20 @@ captions = setupCaptions({
   isOnBattery: () => { try { return powerMonitor.isOnBatteryPower(); } catch (e) { return false; } }
 });
 app.on('will-quit', () => captions.shutdown());
+
+// Live voice translation (src/voice.js): speech to text (above), translation, a copy of the speaker's voice, played back by the page.
+voice = setupVoice({
+  app, store, handle, utilityProcess, fetch: net.fetch.bind(net),
+  showBox: (opts) => showBox(mainWindow, opts),
+  event: (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', channel, data);
+  },
+  pushState: () => hub.push(),
+  transcribe: (pcm, language) => captions.transcribe(pcm, language),
+  speechReady: () => captions.modelReady(),
+  downloadSpeech: (onProgress) => captions.downloadSpeechModel(onProgress)
+});
+app.on('will-quit', () => voice.shutdown());
 
 // RNNoise: the worklet source and the WebAssembly build (SIMD where the CPU has it).
 let rnnoiseAssets = null;

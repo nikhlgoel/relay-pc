@@ -498,8 +498,20 @@ function setupCaptions(ctx) {
     }
   });
 
+  /** Speech to text for other features (live voice translation): { text, language }; starts the speech engine on demand. */
+  async function transcribe(pcm, language) {
+    clearTimeout(idleTimer);
+    const id = prefs().model;
+    if (!modelReady(id)) throw new Error('The speech model is not downloaded yet');
+    await ensureEngine(id);
+    const r = await run(pcm, /^[a-z]{2,3}$/.test(language || '') ? language : 'auto');
+    clearTimeout(idleTimer);
+    if (!session) idleTimer = setTimeout(killEngine, IDLE_MS);
+    return { text: cleanTranscript(r.text), language: baseLang(r.language), ms: r.ms };
+  }
+
   return {
-    state,
+    state, transcribe, modelReady: () => modelReady(prefs().model), downloadSpeechModel: (onProgress) => downloadModel(prefs().model, onProgress),
     shutdown: () => { session = null; killEngine(); },
     _test: { downloadModel, modelPath, modelReady, ensureEngine, killEngine, getEngine: () => engine }
   };
