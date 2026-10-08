@@ -629,7 +629,7 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('context-menu', (_e, params) =>
-    showContextMenu(ses, params));
+    setTimeout(() => { if (mainWindow && !mainWindow.isDestroyed()) showContextMenu(ses, params); }, 40));
 
   // Menu accelerators only bind one key each, but "zoom in" is Ctrl+= on most
   // layouts, Ctrl+Shift+= on others and Ctrl+NumpadAdd on a full keyboard.
@@ -857,6 +857,7 @@ async function trimRendererMemory() {
  * looked like a generic browser. WhatsApp draws its own menus on messages and
  * chats; this handles everything else (media viewer, links, text, inputs).
  */
+const ctxHint = { kind: '', count: 0, at: 0 };
 function showContextMenu(ses, params) {
   const wc = mainWindow.webContents;
   const items = [];
@@ -889,6 +890,15 @@ function showContextMenu(ses, params) {
     if (params.srcURL) {
       items.push({ label: 'Save image as...', click: () => wc.downloadURL(params.srcURL) });
     }
+    separator();
+  }
+
+  // "Translate" for a message (or for the messages ticked in select mode): the page said what the click was on just before
+  if (ctxHint.kind && Date.now() - ctxHint.at < 1500) {
+    items.push({
+      label: ctxHint.kind === 'many' ? 'Translate ' + ctxHint.count + ' messages' : 'Translate this message',
+      click: () => wc.send('relay:event', 'translate-now', null)
+    });
     separator();
   }
 
@@ -1452,7 +1462,7 @@ function osLanguage() {
   if (process.env.RELAY_TEST && process.env.RELAY_TEST_OSLANG) return process.env.RELAY_TEST_OSLANG;      // tests only
   try { return String((app.getPreferredSystemLanguages()[0] || app.getLocale() || 'en')).slice(0, 2).toLowerCase(); } catch (e) { return 'en'; }
 }
-const PAGE_MODULES = ['i18n', 'core', 'translate', 'hub', 'calls', 'captions', 'voice', 'nav', 'video', 'scroll'];
+const PAGE_MODULES = ['i18n', 'core', 'translate', 'hub', 'calls', 'captions', 'transcribe', 'voice', 'nav', 'video', 'scroll'];
 ipcMain.on('page:src', (e) => {
   if (process.env.RELAY_TEST && process.env.RELAY_TEST_NO_MODULES) { e.returnValue = ''; return; }      // tests only: "is it Relay or is it WhatsApp?"
   e.returnValue = fromWhatsApp(e)
@@ -1601,6 +1611,56 @@ voice = setupVoice({
   downloadSpeech: (onProgress) => captions.downloadSpeechModel(onProgress)
 });
 app.on('will-quit', () => voice.shutdown());
+
+// Transcript of a call recording (page side: src/page/transcribe.js): the page decodes the file's sound and sends it in pieces;
+// each piece becomes text here with the same speech model captions use. Nothing leaves the PC.
+const TRANSCRIBE_MAX = 800 * 1024 * 1024;
+handle('relay:transcribe-pick', async () => {
+  const options = {
+    title: 'Choose a recording to transcribe', defaultPath: recordingsDir(), properties: ['openFile'],
+    filters: [{ name: 'Audio or video', extensions: ['mp4', 'webm', 'm4a', 'mp3', 'wav', 'ogg', 'opus', 'mkv', 'mov'] }]
+  };
+  const r = await (visibleOwner(mainWindow) ? dialog.showOpenDialog(mainWindow, options) : dialog.showOpenDialog(options));
+  if (r.canceled || !r.filePaths[0]) return null;
+  const file = r.filePaths[0];
+  const st = await fs.promises.stat(file);
+  if (st.size > TRANSCRIBE_MAX) throw new Error('That recording is too large to transcribe (limit 800 MB)');
+  if (!captions.modelReady()) {
+    await captions.downloadSpeechModel((pct) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', 'transcribe-status', { phase: 'download', pct });
+    });
+  }
+  return { name: path.basename(file), data: await fs.promises.readFile(file) };
+});
+handle('relay:transcribe-clip', async (_e, data, language) => {
+  const buf = Buffer.isBuffer(data) ? data : ArrayBuffer.isView(data) ? Buffer.from(data.buffer, data.byteOffset, data.byteLength) : data instanceof ArrayBuffer ? Buffer.from(data) : null;
+  if (!buf || buf.length < 3200 || buf.length > 16000 * 2 * 30 || buf.length % 2) throw new Error('Bad audio');
+  const r = await captions.transcribe(buf, typeof language === 'string' ? language : 'auto');
+  return { text: r.text, language: r.language };
+});
+handle('relay:transcribe-save', async (_e, name, txt, srt) => {
+  if (typeof txt !== 'string' || typeof srt !== 'string' || txt.length > 20e6) throw new Error('Bad transcript');
+  const base = String(name || 'recording').replace(/[\\/:*?"<>|]+/g, '_').replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  const options = {
+    title: 'Save the transcript', defaultPath: path.join(recordingsDir(), base + '-transcript.txt'),
+    filters: [{ name: 'Text', extensions: ['txt'] }]
+  };
+  const r = await (visibleOwner(mainWindow) ? dialog.showSaveDialog(mainWindow, options) : dialog.showSaveDialog(options));
+  if (r.canceled || !r.filePath) return null;
+  await fs.promises.writeFile(r.filePath, '﻿' + txt, 'utf8');
+  await fs.promises.writeFile(r.filePath.replace(/\.txt$/i, '') + '.srt', '﻿' + srt, 'utf8');
+  if (!process.env.RELAY_TEST) shell.showItemInFolder(r.filePath);
+  return path.basename(r.filePath);
+});
+
+// The page says what a right-click landed on (a message, or ticked messages) so the menu can offer "Translate".
+handle('relay:context-hint', (_e, kind, count) => {
+  ctxHint.kind = kind === 'one' || kind === 'many' ? kind : '';
+  ctxHint.count = Math.max(0, Math.min(500, Number(count) || 0));
+  ctxHint.at = Date.now();
+  return true;
+});
+
 
 // RNNoise: the worklet source and the WebAssembly build (SIMD where the CPU has it).
 let rnnoiseAssets = null;

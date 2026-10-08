@@ -247,6 +247,7 @@
         section('Quick replies', ...quickReplies(s))),
       el('div', { class: 'relay-foot' },
         el('button', { type: 'button', class: 'relay-link', on: { click: () => R.call('action', 'open-recordings').catch(fail) } }, icon('folder', 16), 'Recordings'),
+        el('button', { type: 'button', class: 'relay-link', title: 'Turn a call recording into a text transcript', on: { click: () => { close(); R.transcribe && R.transcribe.run(); } } }, icon('caption', 16), 'Transcript'),
         el('button', { type: 'button', class: 'relay-link', title: 'Save a report of recent problems to Documents', on: { click: () => R.call('action', 'diagnostics').then(() => R.toast('Saved Relay-diagnostics.txt to Documents')).catch(fail) } }, icon('info', 16), 'Diagnostics'),
         el('button', { type: 'button', class: 'relay-link', on: { click: () => R.call('action', 'about').catch(fail) } }, icon('info', 16), 'About')));
 

@@ -211,7 +211,52 @@
     updateButton(enabledFor(chatId()));
   }
 
-  R.translate = { toggleChat, ready, scan: scanSoon };
+  // --- on demand: the right-click menu (src/main.js asks the page to translate what was clicked) ---------------
+  const MSG = '[data-id][data-testid^="conv-msg-"]';
+  /** Messages ticked in WhatsApp's "select messages" mode. */
+  function selectedMessages() {
+    return [...document.querySelectorAll(PANEL + ' ' + MSG)].filter((m) =>
+      m.querySelector('[role="checkbox"][aria-checked="true"], input[type="checkbox"]:checked') ||
+      m.getAttribute('aria-selected') === 'true' || m.closest('[aria-selected="true"]'));
+  }
+
+  async function translateNow(msgs) {
+    const items = msgs.map((msg) => ({ msg, node: textNodeOf(msg) })).filter((x) => x.node && x.node.isConnected);
+    if (!items.length) { R.toast('Nothing to translate in that message'); return; }
+    if (!(await ready())) return;
+    const texts = [...new Set(items.map((x) => flat(x.node).trim()).filter(Boolean))];
+    let done = 0;
+    try {
+      for (let i = 0; i < texts.length; i += 20) {
+        const part = texts.slice(i, i + 20);
+        const out = await R.call('translate', part);
+        part.forEach((t, k) => cache.set(t, out[k]));
+      }
+      for (const { msg, node } of items) {
+        const res = cache.get(flat(node).trim());
+        if (res && res.translated) { seen.set(msg, { text: flat(node).trim(), res }); render(msg, node, res); done++; }
+      }
+      R.toast(done ? (done === 1 ? 'Translated' : 'Translated ' + done + ' messages') : 'Already in English');
+    } catch (err) { R.toast('Translation: ' + err.message); }
+  }
+
+  /** Tells the main process what a right-click is on, so its menu can offer "Translate". */
+  addEventListener('contextmenu', (e) => {
+    const hit = e.target && e.target.closest ? e.target.closest(MSG) : null;
+    const picked = selectedMessages();
+    const kind = picked.length > 1 && (!hit || picked.includes(hit)) ? 'many' : hit ? 'one' : '';
+    R.call('context-hint', kind, picked.length).catch(() => {});
+    window.__relayCtx = { x: e.clientX, y: e.clientY, hit, picked };
+  }, true);
+
+  R.on('translate-now', () => {
+    const c = window.__relayCtx;
+    if (!c) return;
+    const list = c.picked.length > 1 && (!c.hit || c.picked.includes(c.hit)) ? c.picked : c.hit ? [c.hit] : [];
+    translateNow(list);
+  });
+
+  R.translate = { toggleChat, ready, scan: scanSoon, translateNow, selectedMessages };
   R.subscribe(scanSoon);
 
   const app = document.getElementById('app') || document.body;
