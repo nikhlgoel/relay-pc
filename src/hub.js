@@ -65,7 +65,7 @@ function setupHub(ctx) {
   /** Your pick if you made one; otherwise the first provider you have a key for; otherwise Google. */
   function provider() {
     const choice = store.get('translateChoice');
-    if (PROVIDERS[choice]) return choice;
+    if (typeof choice === 'string' && Object.hasOwn(PROVIDERS, choice)) return choice;
     return Object.keys(PROVIDERS).find((p) => PROVIDERS[p].needsKey && hasKey(p)) || 'google';
   }
 
@@ -129,6 +129,14 @@ function setupHub(ctx) {
   handle('relay:proxy-set', async (_e, value) => {
     const v = cleanProxy(value);
     if (v === null) throw new Error('Use the form 127.0.0.1:7890 or socks5://127.0.0.1:1080');
+    if (v && v !== cleanProxy(store.get('proxy'))) {
+      // All of Relay's traffic would go through it: only the person at the keyboard may do that, not a script in the page.
+      const { response } = await showBox({
+        type: 'question', title: 'Proxy', message: 'Send all Relay traffic through ' + v + '?',
+        detail: 'WhatsApp and the downloads will use this proxy until you change it in the Relay panel.', buttons: ['Use this proxy', 'Cancel'], defaultId: 1, cancelId: 1
+      });
+      if (response !== 0) return state();
+    }
     if (v) store.set('proxy', v); else store.delete('proxy');
     if (applyProxy) await applyProxy();
     afterChange('proxy', v);
@@ -137,7 +145,7 @@ function setupHub(ctx) {
 
   // --- translation ---------------------------------------------------------
   handle('relay:translate-provider', (_e, p) => {
-    if (!PROVIDERS[p]) throw new Error('Unknown provider');
+    if (typeof p !== 'string' || !Object.hasOwn(PROVIDERS, p)) throw new Error('Unknown provider');
     store.set('translateChoice', p);
     if (!consented(p)) store.set('translateAll', false);               // "all chats" must be re-confirmed for a new translator
     afterChange('translateProvider', p);
@@ -171,7 +179,7 @@ function setupHub(ctx) {
   // The key is typed into a native window (ctx.promptKey), never into the page, so
   // WhatsApp's scripts cannot read it.
   function setKey(p, key) {
-    if (!PROVIDERS[p] || !PROVIDERS[p].needsKey) throw new Error('Unknown provider');
+    if (typeof p !== 'string' || !Object.hasOwn(PROVIDERS, p) || !PROVIDERS[p].needsKey) throw new Error('Unknown provider');
     key = typeof key === 'string' ? key.trim().replace(/^bearer\s+/i, '') : key;       // pasted straight from a curl example
     if (typeof key !== 'string' || !/^[\w.-]{20,300}$/.test(key)) throw new Error('That does not look like an API key');
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is not available on this PC');
@@ -180,14 +188,14 @@ function setupHub(ctx) {
   }
 
   handle('relay:key-prompt', async (_e, p) => {
-    if (!PROVIDERS[p] || !PROVIDERS[p].needsKey) throw new Error('Unknown provider');
+    if (typeof p !== 'string' || !Object.hasOwn(PROVIDERS, p) || !PROVIDERS[p].needsKey) throw new Error('Unknown provider');
     const key = await promptKey(p);
     if (key) setKey(p, key);
     return state();
   });
 
   handle('relay:key-clear', (_e, p) => {
-    if (!PROVIDERS[p]) throw new Error('Unknown provider');
+    if (typeof p !== 'string' || !Object.hasOwn(PROVIDERS, p)) throw new Error('Unknown provider');
     const k = keys();
     delete k[p];
     store.set('translateKeys', k);

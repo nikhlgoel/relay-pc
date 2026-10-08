@@ -45,6 +45,7 @@
       node.connect(mute);
       mute.connect(sink);
       const cap = { ctx, node, tap: null, src: null };
+      V.cap[kind] = cap;
       cap.segmenter = C.makeSegmenter((pcm) => submit(kind, pcm), () => {});
       node.port.onmessage = (e) => { if (V.on) cap.segmenter.push(e.data); };
       window.__relayBuildingAudio = true;
@@ -57,7 +58,9 @@
             s.connect(node);
           });
         } else {
-          const mic = window.__relayMicTrack;
+          // your voice as it leaves the microphone chain, before the gate that mutes it while a translation is being sent
+          const vo = window.__relayVoiceOut;
+          const mic = vo && vo.raw ? vo.raw : window.__relayMicTrack;
           if (!mic || mic.readyState !== 'live') throw new Error('no microphone');
           cap.src = ctx.createMediaStreamSource(new MediaStream([mic]));
           cap.src.__relayOwn = true;
@@ -65,9 +68,9 @@
         }
       } finally { window.__relayBuildingAudio = false; }
       if (ctx.state === 'suspended') await ctx.resume();
-      V.cap[kind] = cap;
+      if (!V.on) closeCapture(kind);                       // switched off while it was starting
     } catch (err) {
-      try { ctx.close(); } catch (e) { /* ignore */ }
+      closeCapture(kind);
       throw err;
     }
   }
@@ -104,19 +107,21 @@
     const st = state();
     if (!st || (kind === 'in' && st.in === false) || (kind === 'out' && st.out === false)) return;
     if (kind === 'out' && Date.now() < V.inUntil) return;          // you are hearing a translation: that is not you speaking
+    const ordered = V.ordered[kind];                        // a reply for an earlier switch-on must be thrown away, not played
     const seq = ++V.seq[kind];
-    if (V.flight[kind] >= 2) { V.ordered[kind].put(seq, null); return; }
+    if (V.flight[kind] >= 2) { ordered.put(seq, null); return; }
     V.flight[kind]++;
     R.call('voice-clip', kind, pcm, { seq })
       .then((res) => {
+        if (!V.on || V.ordered[kind] !== ordered) return;
         if (res && res.pcm) { V.failures = 0; V.ordered[kind].put(seq, { ...res, kind }); }
         else {
           V.ordered[kind].put(seq, null);
           if (kind === 'out' && res && res.skipped === 'same-language') sendOwnVoice();       // you spoke their language: let your own voice through
         }
       })
-      .catch((err) => { V.ordered[kind].put(seq, null); noteFailure(); })
-      .finally(() => { V.flight[kind]--; });
+      .catch((err) => { if (V.on && V.ordered[kind] === ordered) { ordered.put(seq, null); noteFailure(); } })
+      .finally(() => { if (V.ordered[kind] === ordered) V.flight[kind]--; });
   }
 
   function noteFailure() {
@@ -184,7 +189,10 @@
     if (getComputedStyle(panel).position === 'static') panel.style.position = 'relative';
     V.btn = el('button', {
       id: 'relay-vx', type: 'button', attrs: { 'aria-pressed': 'false', 'aria-label': 'Live voice translation' },
-      on: { click: (e) => { e.stopPropagation(); toggle(); } }
+      on: {
+        pointerdown: (e) => e.stopPropagation(),             // never start dragging WhatsApp's call window
+        click: (e) => { e.stopPropagation(); toggle(); }
+      }
     }, icon('translate', 22), el('span', { class: 'vx-dot' }));
     panel.append(V.btn);
     paint();
@@ -231,6 +239,7 @@
       V.ordered.in = makeOrdered(playIn);
       V.ordered.out = makeOrdered(playOut);
       V.seq.in = V.seq.out = 0;
+      V.flight.in = V.flight.out = 0;
       V.failures = 0;
       V.on = true;
       const noMicChain = st.out !== false && !window.__relayVoiceOut;

@@ -6,6 +6,8 @@
   if (window.__relay) return;
 
   const T = (s) => (typeof window.__relayT === 'function' ? window.__relayT(s) : s);       // Chinese / Russian text (src/page/i18n.js)
+  // These wait for a person (a notice, a file dialog) or for a large download, so the usual 90 s would report a failure that is not one.
+  const LONG = new Set(['caption-start', 'voice-start', 'transcribe-pick', 'transcribe-save', 'transcribe-clip', 'key-prompt', 'translate-consent', 'wa-lang', 'addon-download', 'proxy-set']);
   const pending = new Map();
   const subs = new Set();
   const listeners = new Map();         // push channel -> Set of handlers (R.on)
@@ -87,7 +89,10 @@
   let toastTimer = 0;
   function toast(text) {
     let t = document.getElementById('relay-toast');
-    if (!t) { t = el('div', { id: 'relay-toast', attrs: { role: 'status' } }); document.body.append(t); }
+    if (!t) { t = el('div', { id: 'relay-toast', attrs: { role: 'status' } }); }
+    // In full screen only the call panel is drawn, so the notice has to live inside it to be seen.
+    const host = document.fullscreenElement || document.body;
+    if (t.parentElement !== host) host.append(t);
     t.textContent = T(text);
     // Under the header of the open chat (never over the message box), centred on the chat, not the window.
     const main = document.getElementById('main');
@@ -105,7 +110,7 @@
     call(ch, ...args) {
       return new Promise((resolve, reject) => {
         const id = ++seq;
-        const timer = setTimeout(() => { if (pending.delete(id)) reject(new Error('Timed out')); }, 90000);
+        const timer = setTimeout(() => { if (pending.delete(id)) reject(new Error('Timed out')); }, LONG.has(ch) ? 30 * 60 * 1000 : 90000);
         pending.set(id, { resolve, reject, timer });
         window.postMessage({ __relay: 'req', id, ch, args }, location.origin);
       });

@@ -280,3 +280,8 @@ test('model download: every server unreachable reports a network problem in plai
   const dl = downloaderWith('ru-RU', async () => { throw new Error('net::ERR_CONNECTION_RESET'); });
   await assert.rejects(dl('accurate', () => {}), /No internet connection/);
 });
+
+test('regression: a stored model or language named like an Object property is not accepted', () => {
+  assert.equal(cleanPrefs({ model: 'constructor' }).model, DEFAULTS.model);
+  assert.equal(cleanPrefs({ model: '__proto__' }).model, DEFAULTS.model);
+});

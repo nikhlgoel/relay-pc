@@ -22,6 +22,7 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - **Sharper video**: the picture you receive in a call gets a light sharpening at your screen's resolution and a short, steady video buffer (Relay panel > Calls). Your own camera has its own cleanup
 - **Back** from the mouse's side button, `Alt+Left` or the Windows back key: closes a preview, goes up a Settings page, then closes the open chat
 - **For places where WhatsApp needs a VPN or proxy** (mainland China, Russia ...): Relay follows the Windows proxy; Relay panel > Network takes a proxy address; the model download falls back to a mirror (hf-mirror.com); the Relay panel, captions notice and the "can't reach WhatsApp" screen speak Chinese and Russian
+- **Add-ons**: the speech models are not bundled; Relay offers the 60 MB one on first start and the Relay panel lists them. **Transcript** (panel footer) turns a call recording into a `.txt` and `.srt`. **Right-click a message > Translate** works for one message or for ticked messages
 - Screen stays awake during calls; on-demand call engine and idle trimming keep RAM down
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
@@ -48,7 +49,7 @@ See `tools/setup-kit/README.txt` (English, Chinese, Russian).
 
 ## Build
 
-Requires Node.js 20+ on Windows.
+Requires Node.js 22+ on Windows.
 
 ```bash
 npm install
@@ -85,6 +86,10 @@ src/page/        in-page panel, translation, call keys, captions, back, sharper 
 src/hub.js       panel settings, consent, translation requests, proxy and language choice
 src/captions.js  live captions: speech model, engine process, translation (unit tested)
 src/captions-engine.js  whisper.cpp in a utility process
+src/voice.js, voice-engine.js  live voice translation (in progress: the engine modules in src/voice/ are not shipped yet, so the feature stays hidden)
+src/picker*, prompt*, about.html, offline.html  small native-style windows and the offline screen
+src/vendor/      RNNoise (noise suppression)
+src/assets/installer.nsh  Windows registration done by the installer (App Paths, Default apps, clean uninstall)
 src/translate.js translation back-ends (unit tested)
 src/theme.css    theme and layout styling
 src/urls.js      URL allow-list (unit tested)

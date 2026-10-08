@@ -92,5 +92,8 @@
   },
   "optionalDependencies": {
     "@fugood/node-whisper-win32-x64-vulkan": "1.2.0-rc.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -127,3 +127,24 @@ test('i18n: phrases with a changing part, and names that must never change', () 
   assert.ok(!/__relayT|R\.t\(/.test(read('page/calls.js')), 'calls.js must not translate the labels it searches for');
   assert.ok(/aria-label/.test(callers));
 });
+
+test('regression: names like __proto__ or constructor are not providers (they would skip the consent notice)', () => {
+  const { PROVIDERS } = require('../src/hub');
+  for (const k of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    assert.equal(Object.hasOwn(PROVIDERS, k), false, k);
+  }
+  const src = read('hub.js');
+  assert.ok(!/if \(!PROVIDERS\[p\]\)/.test(src), 'provider lookups must use Object.hasOwn');
+});
+
+test('the setup kit finds an installed Relay by the GUID electron-builder derives from the appId', () => {
+  const crypto = require('node:crypto');
+  const ns = Buffer.from('50e065bc313411e69bab38c9862bdaf3', 'hex');          // electron-builder's namespace
+  const h = crypto.createHash('sha1').update(ns).update(Buffer.from('com.nikhlgoel.relay', 'utf8')).digest();
+  h[6] = (h[6] & 0x0f) | 0x50; h[8] = (h[8] & 0x3f) | 0x80;
+  const hex = h.subarray(0, 16).toString('hex');
+  const guid = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  const ps = fs.readFileSync(path.join(__dirname, '..', 'tools', 'setup-kit', 'Install-Relay.ps1'), 'utf8');
+  assert.ok(ps.includes(guid), 'Install-Relay.ps1 does not mention ' + guid);
+  assert.equal(JSON.parse(read('../package.json')).build.appId, 'com.nikhlgoel.relay');
+});

@@ -25,6 +25,7 @@ const { translateCaption } = require('./translate');
 const MODEL_BASE = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/';
 // Same files, same SHA-256 check. hf-mirror.com is reachable from mainland China when huggingface.co is not.
 const MODEL_MIRRORS = [MODEL_BASE, 'https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/'];
+const STALL_MS = 30000;                  // a download that delivers nothing for this long is given up
 const CONNECT_MS = 15000;                // a server that has not answered by then is skipped for the next one
 const MODELS = {
   fast: {
@@ -101,7 +102,7 @@ function cleanPrefs(p) {
     if (TARGETS.includes(p.lang)) o.lang = p.lang;
     if (SIZES.includes(p.size)) o.size = p.size;
     if (typeof p.original === 'boolean') o.original = p.original;
-    if (MODELS[p.model]) o.model = p.model;
+    if (typeof p.model === 'string' && Object.hasOwn(MODELS, p.model)) o.model = p.model;
     if (p.from === 'auto' || TARGETS.includes(p.from)) o.from = p.from;
   }
   return o;
@@ -143,6 +144,7 @@ function setupCaptions(ctx) {
   let engine = null;                 // { proc, ready, readyPromise, devices, model, gpu, jobs: Map, nextId }
   let idleTimer = null;
   let session = null;                // { recent: [], speed: 0, slow: 0 } while captions are on
+  let startGen = 0;                  // bumped by every stop: a start that was waiting (consent, download, engine) must not switch captions on afterwards
   let starting = null;
   let inFlight = 0;
 
@@ -287,19 +289,26 @@ function setupCaptions(ctx) {
         }
         if (!res) throw lastErr || new Error('ERR_CONNECTION no download server could be reached');
         const total = Number(res.headers.get('content-length')) || m.bytes;
-        out = fs.createWriteStream(part);
         const hash = crypto.createHash('sha256');
-        let got = 0, lastReport = 0;
+        let got = 0, lastReport = 0, failure = null, stall = 0;
         const reader = res.body.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          hash.update(value);
-          got += value.length;
-          if (!out.write(value)) await new Promise((r) => out.once('drain', r));
-          const now = Date.now();
-          if (now - lastReport > 250) { lastReport = now; onProgress(Math.min(1, got / total)); }
-        }
+        const giveUp = (e) => { failure = failure || e; try { reader.cancel(); } catch (x) { /* already closed */ } };
+        out = fs.createWriteStream(part);
+        out.on('error', giveUp);                                // disk full, antivirus lock: end the download instead of hanging
+        try {
+          for (;;) {
+            clearTimeout(stall);
+            stall = setTimeout(() => giveUp(new Error('ERR_CONNECTION the download stalled')), STALL_MS);
+            const { done, value } = await reader.read();
+            if (failure || done) break;
+            hash.update(value);
+            got += value.length;
+            if (!out.write(value)) await new Promise((r) => { const done = () => { out.off('drain', done); out.off('error', done); r(); }; out.once('drain', done); out.once('error', done); });
+            const now = Date.now();
+            if (now - lastReport > 250) { lastReport = now; onProgress(Math.min(1, got / total)); }
+          }
+        } finally { clearTimeout(stall); }
+        if (failure) throw failure;
         await new Promise((resolve, reject) => { out.once('error', reject); out.end(resolve); });
         out = null;
         if (got !== m.bytes || hash.digest('hex') !== m.sha256) throw new Error('The downloaded speech model was damaged - please try again');
@@ -405,7 +414,7 @@ function setupCaptions(ctx) {
 
   // Optional downloads from the Relay panel and the first-run offer: the speech models, one at a time.
   handle('relay:addon-download', async (_e, id) => {
-    if (!MODELS[id]) throw new Error('Unknown download');
+    if (typeof id !== 'string' || !Object.hasOwn(MODELS, id)) throw new Error('Unknown download');
     if (modelReady(id)) return state();
     try {
       await downloadModel(id, (pct) => event('addon-status', { id, pct }));
@@ -421,6 +430,7 @@ function setupCaptions(ctx) {
   handle('relay:caption-start', () => {
     if (starting) return starting;
     starting = (async () => {
+      const gen = ++startGen;
       const id = prefs().model;
       if (!consent() && !(await askConsent(id))) return { ok: false, reason: 'declined' };
       try {
@@ -431,6 +441,7 @@ function setupCaptions(ctx) {
         }
         event('caption-status', { phase: 'loading' });
         const e = await ensureEngine(id);
+        if (gen !== startGen) return { ok: false, reason: 'cancelled' };         // stopped while it was starting
         session = { recent: [], speed: 0, slow: 0 };
         pushState();
         const dev = e.devices.find((d) => d.index === (e.gpu == null ? 0 : e.gpu)) || e.devices[0];
@@ -451,6 +462,7 @@ function setupCaptions(ctx) {
   });
 
   handle('relay:caption-stop', () => {
+    startGen++;
     session = null;
     pushState();
     clearTimeout(idleTimer);
@@ -526,7 +538,9 @@ function setupCaptions(ctx) {
   }
 
   return {
-    state, transcribe, modelReady: () => modelReady(prefs().model), downloadSpeechModel: (onProgress) => downloadModel(prefs().model, onProgress),
+    state, transcribe, modelReady: (id) => modelReady(typeof id === 'string' && Object.hasOwn(MODELS, id) ? id : prefs().model),
+    downloadSpeechModel: (onProgress, id) => downloadModel(typeof id === 'string' && Object.hasOwn(MODELS, id) ? id : prefs().model, onProgress),
+    reset: () => { startGen++; session = null; pushState(); },     // the page went away (reload, crash): captions are off
     shutdown: () => { session = null; killEngine(); },
     _test: { downloadModel, modelPath, modelReady, ensureEngine, killEngine, getEngine: () => engine }
   };

@@ -14,4 +14,10 @@ if errorlevel 1 (
   exit /b 2
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Relay.ps1" %*
-exit /b %ERRORLEVEL%
+set RC=%ERRORLEVEL%
+if not "%RC%"=="0" (
+  echo.
+  echo Something did not finish - see the messages above. The log is in %TEMP%\Relay-Setup-*.log
+  pause
+)
+exit /b %RC%

@@ -235,8 +235,8 @@ if (!process.env.RELAY_TEST) {
 /** What Windows should start at login. A development run needs the app folder too, a portable build its own file. */
 function loginItem(openAtLogin) {
   const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-  const args = app.isPackaged ? [] : [app.getAppPath()];
-  return { openAtLogin, path: exe, args };
+  const args = (app.isPackaged ? [] : [app.getAppPath()]).concat(currentProfile === 'default' ? [] : ['--profile=' + currentProfile]);
+  return { openAtLogin, path: exe, args, name: currentProfile === 'default' ? undefined : 'Relay-' + currentProfile };
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -302,7 +302,7 @@ function registerAppIdentity() {
   if (store.get('appIdentity') === stamp) return;
   const key = 'HKCU\\Software\\Classes\\AppUserModelId\\' + RUNTIME_ID;
   const add = (name, value) => new Promise((resolve) =>
-    require('child_process').execFile('reg', ['add', key, '/v', name, '/d', value, '/f'], { windowsHide: true }, (err) => resolve(!err)));
+    require('child_process').execFile(path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'reg.exe'), ['add', key, '/v', name, '/d', value, '/f'], { windowsHide: true }, (err) => resolve(!err)));
   Promise.all([add('DisplayName', 'Relay'), add('IconUri', relayIcoPath), add('IconBackgroundColor', 'FF111921')])
     .then((ok) => { if (ok.every(Boolean)) store.set('appIdentity', stamp); });
 }
@@ -346,7 +346,7 @@ function getSystemAccent() {
     // Registry fallback for HKCU\Software\Microsoft\Windows\DWM\AccentColor
     try {
       const { execSync } = require('child_process');
-      const out = execSync('reg query "HKCU\\Software\\Microsoft\\Windows\\DWM" /v AccentColor', { encoding: 'utf8' });
+      const out = execSync('"' + path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'reg.exe') + '" query "HKCU\\Software\\Microsoft\\Windows\\DWM" /v AccentColor', { encoding: 'utf8' });
       const m = /AccentColor\s+REG_DWORD\s+0x([0-9a-fA-F]+)/.exec(out);
       if (m) {
         const val = parseInt(m[1], 16);
@@ -603,6 +603,7 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => { if (!offline) setTimeout(() => askWhatsAppLanguage().then(offerAddons).catch(() => {}), 4000); });
   mainWindow.webContents.on('did-finish-load', () => {
     if (!offline) loadRetries = 0;
+    if (offline && mainWindow.webContents.getURL().startsWith('https://web.whatsapp.com/')) { offline = false; clearTimeout(probeTimer); }     // the user's own Try now worked
     if (offline) {
       const css = themeCss();
       if (css) mainWindow.webContents.insertCSS(css).catch(() => {});
@@ -737,8 +738,8 @@ function createWindow() {
   mainWindow.on('focus', applyDnd);
   mainWindow.on('blur', applyDnd);
   mainWindow.webContents.on('did-finish-load', applyDnd);
-  mainWindow.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace && callActive) endCallState(); });
-  mainWindow.webContents.on('render-process-gone', () => endCallState());
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace) { if (callActive) endCallState(); if (captions) captions.reset(); if (voice) voice.reset(); } });
+  mainWindow.webContents.on('render-process-gone', () => { endCallState(); if (captions) captions.reset(); if (voice) voice.reset(); });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -1272,7 +1273,7 @@ handle('clipboard:get-files', () => {
   pasteReading = true;
   return new Promise((resolve) => {
     const script = '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);(Get-Clipboard -Format FileDropList).FullName';
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', script],
+    execFile(path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-STA', '-Command', script],
       { windowsHide: true, timeout: 6000, maxBuffer: 1024 * 1024, encoding: 'utf8' }, async (err, stdout) => {
         try {
           if (err || !stdout) return resolve({ files: [], skipped: 0 });
@@ -1548,14 +1549,14 @@ const ADDON_TEXT = {
 };
 async function offerAddons() {
   if (process.env.RELAY_TEST || store.get('addonsAsked') || !mainWindow || mainWindow.isDestroyed() || !captions) return;
-  store.set('addonsAsked', true);
-  if (captions.modelReady()) return;
+  if (captions.modelReady('fast') || captions.modelReady('accurate')) { store.set('addonsAsked', true); return; }
   const t = ADDON_TEXT[osLanguage()] || ADDON_TEXT.en;
   const { response } = await showBox(mainWindow, { type: 'question', title: t[0], message: t[1], detail: t[2], buttons: t[3], defaultId: 0, cancelId: 1 });
+  store.set('addonsAsked', true);
   if (response !== 0) return;
   const send = (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', 'addon-status', d); };
   try {
-    await captions.downloadSpeechModel((pct) => send({ id: 'fast', pct }));
+    await captions.downloadSpeechModel((pct) => send({ id: 'fast', pct }), 'fast');
     send({ id: 'fast', pct: 1, done: true });
   } catch (err) { send({ id: 'fast', error: String((err && err.message) || err) }); }
 }
@@ -1597,7 +1598,7 @@ hub = setupHub({
   },
   showBox: (opts) => showBox(mainWindow, opts),
   promptKey: promptForKey,
-  extraState: () => ({ ...(captions ? { captions: captions.state() } : {}), ...(voice ? { voice: voice.state() } : {}) }),
+  extraState: () => ({ ...(captions ? { captions: captions.state() } : {}), ...(voice && voice.available() ? { voice: voice.state() } : {}) }),
   afterChange: (name) => {
     if (name === 'dnd') applyDnd();
     if (name === 'autoRecord') onAutoRecordToggled();
@@ -1783,6 +1784,7 @@ app.whenReady().then(async () => {
   if (app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE) {
     autoUpdater.on('error', (err) => console.error('Auto-update failed:', err && err.message));
     autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    setInterval(() => autoUpdater.checkForUpdatesAndNotify().catch(() => {}), 6 * 60 * 60 * 1000).unref();      // a tray app can run for weeks
   }
 
   if (process.platform === 'win32' && systemPreferences && systemPreferences.on) {

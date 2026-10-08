@@ -393,7 +393,7 @@ $looseFiles = New-Object System.Collections.ArrayList
 $searchDirs = @((Join-Path $UserProfile 'Desktop'), (Join-Path $UserProfile 'Downloads'), (Join-Path $UserProfile 'Documents'))
 try { $od = [Environment]::GetFolderPath('Desktop'); if ($od) { $searchDirs += $od } } catch { }
 if ($env:OneDrive) { $searchDirs += (Join-Path $env:OneDrive 'Desktop'); $searchDirs += (Join-Path $env:OneDrive 'Downloads') }
-$filePatterns = @('WhatsApp-portable-*.exe', 'WhatsApp Setup [0-9]*.exe', 'Aura-portable*.exe', 'Aura Setup*.exe', 'WaDesk-portable-*.exe', 'WaDesk Setup*.exe')
+$filePatterns = @('WhatsApp-portable-*.exe', 'WhatsApp Setup *.exe', 'Aura-portable*.exe', 'Aura Setup*.exe', 'WaDesk-portable-*.exe', 'WaDesk Setup*.exe')
 foreach ($d in ($searchDirs | Where-Object { $_ } | Select-Object -Unique)) {
   if (-not (Test-Path -LiteralPath $d -PathType Container)) { continue }
   foreach ($pat in $filePatterns) {

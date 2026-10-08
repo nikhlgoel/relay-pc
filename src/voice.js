@@ -89,7 +89,7 @@ function setupVoice(ctx) {
   // --- the engine process --------------------------------------------------------------
   let engine = null;                     // { proc, ready, readyPromise, features, jobs, nextId, waiters }
   const modelsPresent = () => {
-    const has = (name) => { try { return fs.readdirSync(dir()).some((f) => f.toLowerCase().startsWith(name)); } catch (e) { return false; } };
+    const has = (name) => { try { return fs.readdirSync(dir()).some((f) => f.toLowerCase().startsWith(name) && !/\.part$/i.test(f)); } catch (e) { return false; } };
     return { mt: has('translategemma'), voice: has('tone_color') || has('openvoice') };
   };
 
@@ -149,6 +149,10 @@ function setupVoice(ctx) {
     });
   }
 
+  // The engine holds gigabytes: released a couple of minutes after the last call translation ends.
+  let idleTimer = null;
+  const armIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(killEngine, 120000); };
+
   // --- one call ----------------------------------------------------------------------------
   let session = null;
   const newSession = () => ({
@@ -206,6 +210,7 @@ function setupVoice(ctx) {
     if (!s) return;
     const key = direction === 'in' ? 'In' : 'Out';
     if (s['emb' + key] || s['building' + key]) return;
+    if (direction === 'out' && s.noSave) return;
     if (direction === 'out') {
       const saved = readProfile();
       if (saved) { s.embOut = Buffer.from(saved); return; }
@@ -292,7 +297,7 @@ function setupVoice(ctx) {
 
   handle('relay:voice-forget', async () => {
     try { await fs.promises.unlink(profileFile()); } catch (e) { /* none */ }
-    if (session) session.embOut = null;
+    if (session) { session.embOut = null; session.noSave = true; session.refOut.clear(); }
     pushState();
     return state();
   });
@@ -316,6 +321,7 @@ function setupVoice(ctx) {
           else await ensureModels('mt');
         }
         if (!have.voice) await ensureModels('voice');
+        clearTimeout(idleTimer);
         session = newSession();
         pushState();
         event('voice-status', { phase: 'ready', local: Boolean(e.features && e.features.mt) });
@@ -334,6 +340,7 @@ function setupVoice(ctx) {
 
   handle('relay:voice-stop', () => {
     session = null;
+    armIdle();
     pushState();
     return true;
   });
@@ -343,8 +350,12 @@ function setupVoice(ctx) {
     return handleClip(direction, data, meta);
   });
 
+  /** The engine modules ship with the app; until they do, the panel and the call button stay hidden. */
+  const available = () => ['mt-local.js', 'voiceclone.js'].every((f) => fs.existsSync(path.join(__dirname, 'voice', f)));
+
   return {
-    state,
+    state, available,
+    reset: () => { if (session) { session = null; armIdle(); pushState(); } },       // the page went away (reload, crash)
     shutdown: () => { session = null; killEngine(); },
     _test: { handleClip, newSession, setSession: (s) => { session = s; } }
   };

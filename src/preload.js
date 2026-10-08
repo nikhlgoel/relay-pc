@@ -831,7 +831,13 @@ function installCallFullscreenButton() {
       if (e.target.closest('button, [role="toolbar"]')) return;
       toggleCallFullscreen(panel);
     });
-    document.addEventListener('fullscreenchange', () => syncFullscreenButton(panel));
+  }
+  if (!installCallFullscreenButton.listening) {
+    installCallFullscreenButton.listening = true;
+    document.addEventListener('fullscreenchange', () => {
+      const p = document.querySelector('[data-testid="move_resize_component"]');
+      if (p) syncFullscreenButton(p);
+    });
   }
   if (panel.querySelector('[data-relay-fs]')) return;
 
@@ -960,7 +966,7 @@ function hookCallRecording() {
           if (sources.length > 300) {                      // sound effects connect often; drop the ones already collected
             for (let i = sources.length - 1; i >= 0; i--) if (!sources[i].deref()) sources.splice(i, 1);
           }
-          for (const t of taps) tapNode(this, t);
+          for (const t of taps) { try { tapNode(this, t); } catch (e) { /* one listener failing must not stop the others */ } }
         }
       } catch (e) { /* never break WhatsApp's audio */ }
       return result;
@@ -969,11 +975,11 @@ function hookCallRecording() {
     /** Starts a listener: onNew(destination) gets one stream per audio context that plays to the speakers. */
     function startTap(onNew) {
       const t = { dests: new Map(), onNew };
-      taps.add(t);
       for (let i = sources.length - 1; i >= 0; i--) {
         const n = sources[i].deref();
         if (!n) sources.splice(i, 1); else tapNode(n, t);
       }
+      taps.add(t);                                       // after the set-up: a listener that threw must not stay behind and break the others
       return t;
     }
 
@@ -1079,6 +1085,7 @@ function hookCallRecording() {
       if (e.data.relay === 'rec-cmd' && e.data.cmd === 'stop') stop();
     });
     const ask = (msg) => new Promise((resolve) => {
+      if (pending) { resolve(null); return; }                // a question is already open (R pressed twice, auto-record plus a click)
       pending = resolve;
       post(msg);
       setTimeout(() => { if (pending === resolve) { pending = null; resolve(null); } }, 180000);
@@ -1426,7 +1433,10 @@ function hookMediaDevices() {
       // Live voice translation (src/page/voice.js): the translated voice is mixed in here, and your own voice can be switched off.
       const gate = ctx.createGain();
       const synthIn = ctx.createGain();
+      const rawDest = ctx.createMediaStreamDestination();
+      rawDest.__relayTap = true;
       const voiceOut = {
+        raw: rawDest.stream.getAudioTracks()[0],
         nextAt: 0, sources: new Set(),
         passthrough(on) { gate.gain.setTargetAtTime(on ? 1 : 0, ctx.currentTime, 0.03); },
         play(pcm, rate) {
@@ -1461,6 +1471,7 @@ function hookMediaDevices() {
         limiter.connect(gate);
         gate.connect(dest);
         synthIn.connect(dest);
+        limiter.connect(rawDest);                 // your voice before the gate: what live translation listens to
       } finally {
         window.__relayBuildingAudio = false;
       }

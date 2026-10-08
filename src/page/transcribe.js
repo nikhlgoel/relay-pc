@@ -59,6 +59,7 @@
     try {
       const picked = await R.call('transcribe-pick');
       if (!picked) return;
+      if (picked.data.byteLength > 300 * 1024 * 1024) { R.toast('That recording is too large to transcribe here (limit 300 MB)'); return; }     // decoding it needs several times its size in memory
       R.toast('Reading ' + picked.name + '...');
       const pcm = await decode(picked.data);
       if (pcm.length < RATE) { R.toast('That recording has no sound to transcribe'); return; }

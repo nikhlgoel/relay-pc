@@ -148,7 +148,11 @@
       if (cache.size > 800) for (const k of [...cache.keys()].slice(0, 200)) cache.delete(k);
       streak = 0;
     } catch (err) {
-      texts.forEach((t) => { failed.set(t, Date.now()); wanted.delete(t); });
+      texts.forEach((t) => {
+        failed.set(t, Date.now());
+        for (const msg of (wanted.get(t) || [])) seen.delete(msg);        // so the retry after 30 s picks these bubbles up again
+        wanted.delete(t);
+      });
       if (failed.size > 400) for (const k of [...failed.keys()].slice(0, 200)) failed.delete(k);
       streak++;
       if (streak >= 3) {

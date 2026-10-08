@@ -30,6 +30,7 @@
   }
 
   function row(ic, title, sub, control) {
+    if (control && control.getAttribute && control.getAttribute('role') === 'switch') control.setAttribute('aria-label', R.t(title));    // a switch needs a name for screen readers
     return el('div', { class: 'relay-row' },
       el('span', { class: 'relay-row-ic' }, icon(ic, 20)),
       el('div', { class: 'relay-row-tx' },
@@ -247,7 +248,10 @@
     if (!s) return;
     const keep = panel.querySelector('.relay-body');
     const scroll = keep ? keep.scrollTop : 0;
-    const hadFocus = document.activeElement && document.activeElement.classList.contains('relay-input');
+    // The panel is rebuilt on every state push: keep keyboard focus on the same control (and the caret in a text box).
+    const active = document.activeElement && panel.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = active ? active.tagName + '|' + (active.getAttribute('aria-label') || active.title || active.textContent.trim()) : null;
+    const hadFocus = false;
     const section = (title, ...kids) => el('section', { class: 'relay-sec' }, el('h3', { text: title }), ...kids);
 
     panel.replaceChildren(
@@ -281,7 +285,10 @@
 
     const body = panel.querySelector('.relay-body');
     body.scrollTop = scroll;
-    if (hadFocus) { const i = panel.querySelector('.relay-input'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
+    if (focusKey) {
+      const again = [...panel.querySelectorAll('button, select, input')].find((n) => n.tagName + '|' + (n.getAttribute('aria-label') || n.title || n.textContent.trim()) === focusKey);
+      if (again) { again.focus({ preventScroll: true }); if (again.setSelectionRange && again.type === 'text') { try { again.setSelectionRange(again.value.length, again.value.length); } catch (e) { /* not a text box */ } } }
+    }
   }
 
   // --- quick replies from the message box -------------------------------------

@@ -17,7 +17,7 @@
   WriteRegStr SHCTX "Software\Classes\RelayURL" "" "${PRODUCT_NAME} (WhatsApp link)"
   WriteRegStr SHCTX "Software\Classes\RelayURL" "URL Protocol" ""
   WriteRegStr SHCTX "Software\Classes\RelayURL\DefaultIcon" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
-  WriteRegStr SHCTX "Software\Classes\RelayURL\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"'
+  WriteRegStr SHCTX "Software\Classes\RelayURL\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" -- "%1"'
 
   WriteRegStr SHCTX "Software\Relay\Capabilities" "ApplicationName" "${PRODUCT_NAME}"
   WriteRegStr SHCTX "Software\Relay\Capabilities" "ApplicationDescription" "A fast desktop app for WhatsApp"
@@ -29,7 +29,26 @@
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
+; Registered by the app itself at run time (Electron): the whatsapp: link handler and the start-with-Windows entry.
+; They are removed only when they point into this install, so another program's entries are never touched.
+!macro relayRemoveOwnRuntimeKeys
+  StrLen $R1 "$INSTDIR"
+  ReadRegStr $R0 HKCU "Software\Classes\whatsapp\shell\open\command" ""
+  StrCpy $R2 $R0 $R1 1
+  ${If} $R0 != ""
+  ${AndIf} $R2 == "$INSTDIR"
+    DeleteRegKey HKCU "Software\Classes\whatsapp"
+  ${EndIf}
+  ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  StrCpy $R2 $R0 $R1 1
+  ${If} $R0 != ""
+  ${AndIf} $R2 == "$INSTDIR"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  ${EndIf}
+!macroend
+
 !macro relayUnregister
+  !insertmacro relayRemoveOwnRuntimeKeys
   DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\App Paths\${APP_EXECUTABLE_FILENAME}"
   DeleteRegKey SHCTX "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}"
   DeleteRegKey SHCTX "Software\Classes\RelayURL"

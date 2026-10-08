@@ -143,7 +143,7 @@
   const S = {
     on: false, starting: false,
     tap: null, ctx: null, node: null, segmenter: null,
-    seq: 0, inFlight: 0, ready: new Map(), nextShow: 1, stuckSince: 0,
+    seq: 0, gen: 0, sid: 0, inFlight: 0, ready: new Map(), nextShow: 1, stuckSince: 0,
     lines: [], lastLang: '', speaking: false, lastCaptionAt: 0,
     status: '', pct: -1, toastedAt: 0, popover: null, overlay: null, missing: 0
   };
@@ -227,11 +227,12 @@
     if (!S.on) return;
     if (S.inFlight >= 3) { S.seq++; S.ready.set(S.seq, null); drain(); setStatus('Catching up...'); return; }   // the engine is behind: skip this clip
     const seq = ++S.seq;
+    const sid = S.sid;                                     // a reply that arrives after captions were switched off and on again belongs to the old session
     S.inFlight++;
     R.call('caption-audio', pcm, { seq })
-      .then((res) => { S.ready.set(seq, res && res.text ? res : null); if (res && res.busy) setStatus('Catching up...'); if (res && res.note) toastOnce('Captions: ' + res.note); })
-      .catch(() => { S.ready.set(seq, null); })
-      .finally(() => { S.inFlight--; drain(); });
+      .then((res) => { if (S.sid !== sid) return; S.ready.set(seq, res && res.text ? res : null); if (res && res.busy) setStatus('Catching up...'); if (res && res.note) toastOnce('Captions: ' + res.note); })
+      .catch(() => { if (S.sid === sid) S.ready.set(seq, null); })
+      .finally(() => { if (S.sid !== sid) return; S.inFlight--; drain(); });
   }
 
   function drain() {
@@ -351,7 +352,7 @@
 
   function wordSpans(text) {
     const parts = /\s/.test(text) || text.length < 14 ? text.match(/\S+\s*/g) : text.match(/[\s\S]{1,3}/gu);      // spaced languages by word, Chinese / Japanese / Thai by 3 characters
-    return (parts || [text]).map((w, i) => el('span', { class: 'cc-w', text: w, attrs: { style: '--i:' + Math.min(i, 18) } }));
+    return (parts || [text]).map((w, i) => el('span', { class: 'cc-w', raw: true, text: w, attrs: { style: '--i:' + Math.min(i, 18) } }));
   }
 
   function showCaption(r) {
@@ -361,7 +362,7 @@
     const box = ov.querySelector('.cc-lines');
     const p = prefs();
     const line = el('p', { class: 'cc-line', attrs: { dir: 'auto' } }, ...wordSpans(r.text));
-    if (p.original && r.translated && r.original) line.append(el('span', { class: 'cc-orig', text: r.original, attrs: { dir: 'auto' } }));
+    if (p.original && r.translated && r.original) line.append(el('span', { class: 'cc-orig', raw: true, text: r.original, attrs: { dir: 'auto' } }));
     box.append(line);
     const chars = r.text.length;
     S.lines.push({ node: line, until: Date.now() + Math.max(2800, Math.min(8500, 1800 + chars * 62)) });
@@ -473,10 +474,12 @@
     const panel = panelEl();
     if (!panel) return;
     S.starting = true;
+    const gen = ++S.gen;                                   // turnOff() while this is waiting must win
     ensureOverlay(panel);
     setStatus('Starting captions…');
     let res;
     try { res = await R.call('caption-start'); } catch (err) { res = { ok: false, message: err && err.message }; }
+    if (S.gen !== gen) return;                             // switched off (or restarted) in the meantime
     if (!res || !res.ok) {
       S.starting = false;
       if (res && res.reason !== 'declined') R.toast((res && res.message) || 'Captions could not start');
@@ -485,7 +488,9 @@
     }
     try {
       await openCapture();
+      if (S.gen !== gen) { if (!S.on && !S.starting) closeCapture(); return; }
     } catch (err) {
+      if (S.gen !== gen) { if (!S.on && !S.starting) closeCapture(); return; }
       S.starting = false;
       closeCapture();
       R.call('caption-stop').catch(() => {});
@@ -495,7 +500,7 @@
     }
     S.starting = false;
     S.on = true;
-    S.seq = 0; S.nextShow = 1; S.ready.clear(); S.inFlight = 0; S.lastCaptionAt = 0; S.lastLang = '';
+    S.sid++; S.seq = 0; S.nextShow = 1; S.ready.clear(); S.inFlight = 0; S.lastCaptionAt = 0; S.lastLang = '';
     setStatus('');
     paintMeta();
   }
@@ -510,6 +515,7 @@
 
   function turnOff() {
     const wasOn = S.on || S.starting;
+    S.gen++;
     S.on = false;
     S.starting = false;
     closeCapture();
