@@ -1653,6 +1653,7 @@ function spawnVoiceEngine(script) {
   // RELAY_VOICE_LOG=<file> keeps the engine's error output for diagnosing it (not used otherwise).
   const log = process.env.RELAY_VOICE_LOG ? fs.openSync(process.env.RELAY_VOICE_LOG, 'a') : 'ignore';
   const cp = spawn(node, [inAsar], { stdio: ['ignore', log, log, 'ipc'], env, windowsHide: true });
+  if (typeof log === 'number') { try { fs.closeSync(log); } catch (e) { /* the child has its own copy */ } }
   const proc = new (require('events'))();
   const { encode, decode } = require('./voice-ipc');
   cp.on('message', (m) => proc.emit('message', decode(m)));

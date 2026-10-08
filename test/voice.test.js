@@ -190,6 +190,31 @@ test('a long clip is detected afresh; only a short one follows the recent langua
   assert.deepEqual(seen, ['es', 'auto']);
 });
 
+test('regression: the engine process ends with the app and is stopped at once on quit', () => {
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'voice-engine.js'), 'utf8'), /process\.on\('disconnect', \(\) => process\.exit\(0\)\)/);
+  const killed = [];
+  const procs = [];
+  const { v } = make({ procs });
+  v._test.setSession(v._test.newSession());
+  return v._test.handleClip('in', clip(2), { seq: 1 }).then(() => {
+    procs[0].kill = () => killed.push(1);
+    v.shutdown();
+    assert.equal(killed.length, 1, 'the engine is killed straight away, not after a delay');
+  });
+});
+
+test('regression: starting a call forgets an old crash, so its first sentence is not thrown away', async () => {
+  const procs = [];
+  const { v, handlers } = make({ procs });
+  v._test.setSession(v._test.newSession());
+  await v._test.handleClip('in', clip(2), { seq: 1 });
+  procs[0].emit('exit', 1);                                 // crashed while nobody was talking
+  v._test.setSession(null);
+  assert.equal((await handlers['relay:voice-start']()).ok, true);
+  const r = await v._test.handleClip('in', clip(2), { seq: 2 });
+  assert.equal(r.skipped, undefined, 'translated, not "restarting"');
+});
+
 test('an engine that dies during a call is started again by the next clip, which is skipped meanwhile', async () => {
   const procs = [];
   const { v, log } = make({ procs });

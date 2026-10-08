@@ -87,6 +87,9 @@ async function job(m) {
   throw new Error('Unknown job');
 }
 
+// The app is gone (closed, crashed, killed by an updater): this process must not outlive it, or it keeps gigabytes and locks node.exe.
+if (!process.parentPort) process.on('disconnect', () => process.exit(0));
+
 if (port) {
   port.on('message', (e) => {
     const m = e && e.data;

@@ -322,6 +322,8 @@ function setupVoice(ctx) {
   handle('relay:voice-start', () => {
     if (starting) return starting;
     starting = (async () => {
+      clearTimeout(idleTimer);                // an earlier call's idle timer must not stop the engine while this one loads it
+      restartNeeded = false;
       if (!consent() && !(await askConsent())) return { ok: false, reason: 'declined' };
       try {
         event('voice-status', { phase: 'loading' });
@@ -373,7 +375,7 @@ function setupVoice(ctx) {
   return {
     state, available,
     reset: () => { if (session) { session = null; armIdle(); pushState(); } },       // the page went away (reload, crash)
-    shutdown: () => { session = null; killEngine(); },
+    shutdown: () => { session = null; clearTimeout(idleTimer); const p = engine && engine.proc; killEngine(); if (p) { try { p.kill(); } catch (e) { /* gone */ } } },
     _test: { handleClip, newSession, setSession: (s) => { session = s; } }
   };
 }
