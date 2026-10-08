@@ -15,7 +15,9 @@
     "test": "node --test \"test/*.test.js\"",
     "icons": "electron tools/make-icons.js",
     "dist": "electron-builder --win",
-    "pack": "electron-builder --win --dir"
+    "pack": "electron-builder --win --dir",
+    "predist": "node tools/get-node.js",
+    "prepack": "node tools/get-node.js"
   },
   "devDependencies": {
     "electron": "^44.5.1",
@@ -39,7 +41,14 @@
     },
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**",
+      "!node_modules/@fugood/node-llama-win32-x64-cuda/**",
+      "!node_modules/@fugood/node-llama-wasm/**",
+      "!node_modules/@fugood/llama.node/src/**",
+      "!node_modules/@fugood/*/**/*.md"
     ],
     "win": {
       "icon": "src/assets/icon.ico",
@@ -84,14 +93,45 @@
       "onlyLoadAppFromAsar": true
     },
     "asarUnpack": [
-      "node_modules/@fugood/**/*"
+      "node_modules/@fugood/**/*",
+      "src/voice-engine.js",
+      "src/voice-ipc.js",
+      "src/voice/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/onnxruntime-common/**/*",
+      "node_modules/sherpa-onnx-node/**/*",
+      "node_modules/sherpa-onnx-win-x64/**/*",
+      "node_modules/adm-zip/**/*",
+      "node_modules/global-agent/**/*",
+      "node_modules/matcher/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/serialize-error/**/*",
+      "node_modules/type-fest/**/*",
+      "node_modules/escape-string-regexp/**/*",
+      "node_modules/globalthis/**/*",
+      "node_modules/define-properties/**/*",
+      "node_modules/define-data-property/**/*",
+      "node_modules/es-define-property/**/*",
+      "node_modules/es-errors/**/*",
+      "node_modules/gopd/**/*",
+      "node_modules/object-keys/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "tools/runtime/node.exe",
+        "to": "node/node.exe"
+      }
     ]
   },
   "overrides": {
     "@electron/get": "^5.1.0"
   },
   "optionalDependencies": {
-    "@fugood/node-whisper-win32-x64-vulkan": "1.2.0-rc.1"
+    "@fugood/llama.node": "^1.7.15",
+    "@fugood/node-llama-win32-x64-vulkan": "^1.7.15",
+    "@fugood/node-whisper-win32-x64-vulkan": "1.2.0-rc.1",
+    "onnxruntime-node": "^1.30.0",
+    "sherpa-onnx-node": "^1.13.8"
   },
   "engines": {
     "node": ">=22"

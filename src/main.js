@@ -1638,15 +1638,41 @@ captions = setupCaptions({
 });
 app.on('will-quit', () => captions.shutdown());
 
+/**
+ * The voice engine runs in a plain Node.js process (shipped as resources/node/node.exe; `node` on the PATH when run from source):
+ * the speech-synthesis library cannot run inside Electron. Returns an object shaped like utilityProcess's child.
+ */
+function spawnVoiceEngine(script) {
+  const { spawn } = require('child_process');       // not fork(): Electron disables it when the runAsNode fuse is off, as in the shipped app
+  const inAsar = script.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
+  const packagedNode = path.join(process.resourcesPath || '', 'node', 'node.exe');
+  const node = process.env.RELAY_NODE || (app.isPackaged && fs.existsSync(packagedNode) ? packagedNode : 'node');
+  const unpackedModules = path.join(path.dirname(inAsar), '..', 'node_modules');
+  const env = { ...process.env, ELECTRON_RUN_AS_NODE: undefined, NODE_PATH: [unpackedModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter) };
+  delete env.ELECTRON_RUN_AS_NODE;
+  // RELAY_VOICE_LOG=<file> keeps the engine's error output for diagnosing it (not used otherwise).
+  const log = process.env.RELAY_VOICE_LOG ? fs.openSync(process.env.RELAY_VOICE_LOG, 'a') : 'ignore';
+  const cp = spawn(node, [inAsar], { stdio: ['ignore', log, log, 'ipc'], env, windowsHide: true });
+  const proc = new (require('events'))();
+  const { encode, decode } = require('./voice-ipc');
+  cp.on('message', (m) => proc.emit('message', decode(m)));
+  cp.on('exit', (code) => proc.emit('exit', code));
+  cp.on('error', (err) => { console.warn('[voice] engine process:', err.message); proc.emit('exit', -1); });
+  proc.postMessage = (m) => { try { cp.send(encode(m)); } catch (e) { /* it has stopped: the exit event follows */ } };
+  proc.kill = () => { try { cp.kill(); } catch (e) { /* gone */ } };
+  return proc;
+}
+
 // Live voice translation (src/voice.js): speech to text (above), translation, a copy of the speaker's voice, played back by the page.
 voice = setupVoice({
-  app, store, handle, utilityProcess, fetch: net.fetch.bind(net),
+  app, store, handle, utilityProcess, fetch: net.fetch.bind(net), spawnEngine: spawnVoiceEngine,
   showBox: (opts) => showBox(mainWindow, opts),
   event: (channel, data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', channel, data);
   },
   pushState: () => hub.push(),
   transcribe: (pcm, language) => captions.transcribe(pcm, language),
+  theirLanguage: () => { try { return captions.state().from; } catch (e) { return 'auto'; } },
   speechReady: () => captions.modelReady(),
   downloadSpeech: (onProgress) => captions.downloadSpeechModel(onProgress)
 });

@@ -19,7 +19,8 @@ const path = require('path');
 const { translateCaption } = require('./translate');
 
 const DEFAULTS = { in: true, out: true, hear: '', they: 'auto', duck: 0.15 };
-const LANGS = ['en', 'hi', 'zh', 'ru', 'es', 'fr', 'de', 'ar', 'ja', 'ko', 'pt', 'tr', 'bn', 'ur', 'it', 'nl', 'pl', 'uk', 'id', 'vi', 'th'];
+// The languages the voice engine can SPEAK (src/voice/voiceclone.js); any language can be listened to and translated from.
+const LANGS = ['en', 'hi', 'zh', 'ru', 'es'];
 const REF_SECONDS = 10;                  // how much of a voice is needed to copy it
 const REF_MAX_BYTES = 16000 * 2 * 20;    // never keep more than 20 s (16 kHz, 16-bit)
 const MAX_CLIP_BYTES = 16000 * 2 * 12;
@@ -95,7 +96,9 @@ function setupVoice(ctx) {
 
   function startEngine() {
     if (engine) return engine.readyPromise;
-    const proc = utilityProcess.fork(path.join(__dirname, 'voice-engine.js'), [], { serviceName: 'Relay voice', stdio: 'ignore' });
+    const proc = ctx.spawnEngine
+      ? ctx.spawnEngine(path.join(__dirname, 'voice-engine.js'))
+      : utilityProcess.fork(path.join(__dirname, 'voice-engine.js'), [], { serviceName: 'Relay voice', stdio: 'ignore' });
     const e = engine = { proc, ready: false, features: null, jobs: new Map(), nextId: 1, waiters: new Map() };
     e.readyPromise = new Promise((resolve, reject) => {
       proc.on('message', (m) => {
@@ -114,7 +117,7 @@ function setupVoice(ctx) {
         }
       });
       proc.once('exit', () => {
-        if (engine === e) engine = null;
+        if (engine === e) { engine = null; if (session) restartNeeded = true; }
         reject(new Error('The voice engine stopped'));
         for (const j of e.jobs.values()) j.reject(new Error('The voice engine stopped'));
         for (const w of e.waiters.values()) w.reject(new Error('The voice engine stopped'));
@@ -139,11 +142,11 @@ function setupVoice(ctx) {
     await new Promise((resolve, reject) => { e.waiters.set(what, { resolve, reject }); e.proc.postMessage({ type: 'ensure', what }); });
   }
 
-  async function job(op, payload, transfer) {
+  async function job(op, payload, transfer, timeout) {
     const e = await startEngine();
     return new Promise((resolve, reject) => {
       const id = e.nextId++;
-      const timer = setTimeout(() => { e.jobs.delete(id); reject(new Error('The voice engine took too long')); }, JOB_TIMEOUT);
+      const timer = setTimeout(() => { e.jobs.delete(id); reject(new Error('The voice engine took too long')); }, timeout || JOB_TIMEOUT);
       e.jobs.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (er) => { clearTimeout(timer); reject(er); } });
       e.proc.postMessage({ type: 'job', id, op, ...payload }, transfer || []);
     });
@@ -155,6 +158,8 @@ function setupVoice(ctx) {
 
   // --- one call ----------------------------------------------------------------------------
   let session = null;
+  let restartNeeded = false;                 // the engine process died during a call: the next clip starts it again
+  let modelsMissingMt = false;
   const newSession = () => ({
     startedAt: Date.now(), refIn: makeReference(), refOut: makeReference(), embIn: null, embOut: null, buildingIn: false, buildingOut: false,
     theirLang: '', announced: false, recent: { in: [], out: [] }, busy: { in: 0, out: 0 }, localMt: true, failures: 0
@@ -174,7 +179,7 @@ function setupVoice(ctx) {
       'Nothing is recorded and no audio leaves your computer. A small profile of your own voice is kept on this PC (delete it any time in the Relay panel); the other person\'s voice is only held in memory during the call.\n\n' +
       'The other person hears a spoken notice that the call is being translated automatically. A translation can be wrong or sound unlike the speaker - do not rely on it for anything important. ' +
       'Use it only where everyone on the call is fine with it, and never to pass yourself off as someone else.\n\n' +
-      'The first time, about 3 GB of models are downloaded (translator and voices).';
+      'The first time, about 3 GB of models are downloaded (translator and voices). The translator is Google Gemma, used under the Gemma Terms of Use (ai.google.dev/gemma/terms); the voices are Kokoro and Piper (open licences) with OpenVoice.';
     const { response, checkboxChecked } = await showBox({
       type: 'question', title: 'Live voice translation', message: 'Translate your calls out loud?', detail,
       buttons: ['Turn on', 'Cancel'], defaultId: 0, cancelId: 1,
@@ -190,7 +195,7 @@ function setupVoice(ctx) {
   async function translateText(text, from, to) {
     if (!text || baseLang(from) === baseLang(to)) return text;
     const s = session;
-    if (s && s.localMt && modelsPresent().mt) {
+    if (s && s.localMt && !modelsMissingMt && modelsPresent().mt) {
       try { return (await job('translate', { text, from: from || 'auto', to })).text; } catch (err) {
         if (/no translator engine|not found|missing|ENOENT|download/i.test(err.message)) s.localMt = false;       // not usable: Google, if allowed
         else throw err;
@@ -238,6 +243,12 @@ function setupVoice(ctx) {
   async function handleClip(direction, data, meta) {
     const s = session;
     if (!s) return { skipped: 'off' };
+    if (restartNeeded) {
+      restartNeeded = false;
+      event('voice-status', { phase: 'loading' });
+      job('warm', {}, [], 5 * 60 * 1000).catch((err) => console.warn('[voice] restart failed:', err.message));
+      return { skipped: 'restarting' };
+    }
     const buf = toClip(data);
     if (!buf) throw new Error('Bad audio');
     const p = prefs();
@@ -248,7 +259,10 @@ function setupVoice(ctx) {
       (direction === 'in' ? s.refIn : s.refOut).add(buf);
       buildEmbedding(direction);
 
-      const r = await transcribe(buf, voteLanguage(s.recent[direction]));
+      const secs = buf.length / 32000;
+      const fixed = direction === 'in' && typeof ctx.theirLanguage === 'function' ? ctx.theirLanguage() : 'auto';       // "Spoken language" chosen in the caption settings
+      const hint = fixed && fixed !== 'auto' ? fixed : secs < 2.2 ? voteLanguage(s.recent[direction]) : 'auto';
+      const r = await transcribe(buf, hint);
       if (!r.text || session !== s) return { skipped: 'silence' };
       const spoken = r.language || '';
       if (spoken) { s.recent[direction].push(spoken); if (s.recent[direction].length > 8) s.recent[direction].shift(); }
@@ -259,6 +273,8 @@ function setupVoice(ctx) {
       if (baseLang(spoken) === baseLang(target)) return { skipped: 'same-language', text: r.text, lang: spoken };
 
       const translated = await translateText(r.text, spoken || 'auto', target);
+      const norm = (t) => String(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+      if (norm(translated) === norm(r.text)) return { skipped: 'same-language', text: r.text, lang: spoken };
       const emb = direction === 'in' ? s.embIn : s.embOut;
       const out = { text: translated, original: r.text, from: spoken, to: target, seq: meta && Number.isInteger(meta.seq) ? meta.seq : 0, voiceCopied: Boolean(emb) };
 
@@ -313,14 +329,15 @@ function setupVoice(ctx) {
           event('voice-status', { phase: 'download', what: 'speech', pct: 0 });
           await downloadSpeech((pct) => event('voice-status', { phase: 'download', what: 'speech', pct }));
         }
-        const have = modelsPresent();
         const e = await startEngine();
         const c = consent();
-        if (!have.mt) {
-          if (c && c.google) await ensureModels('mt').catch(() => {});      // best effort: Google covers a missing translator
-          else await ensureModels('mt');
-        }
-        if (!have.voice) await ensureModels('voice');
+        // Checks every file's size and fingerprint (under a second when all are there) and downloads whatever is missing or damaged.
+        if (c && c.google) await ensureModels('mt').catch(() => {});        // best effort: Google covers a missing translator
+        else await ensureModels('mt');
+        await ensureModels('voice');
+        event('voice-status', { phase: 'loading' });
+        const warm = await job('warm', {}, [], 5 * 60 * 1000);          // models into memory (the very first start also compiles shaders)
+        if (!warm.mt) modelsMissingMt = true;
         clearTimeout(idleTimer);
         session = newSession();
         pushState();

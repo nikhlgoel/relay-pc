@@ -9,16 +9,18 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { setupVoice, cleanPrefs, toClip, makeReference, voteLanguage, LANGS, REF_SECONDS } = require('../src/voice');
 
-function fakeEngine(log) {
+function fakeEngine(log, translate, procs) {
   return {
     fork() {
       const proc = new EventEmitter();
+      if (procs) procs.push(proc);
       proc.kill = () => {};
       proc.postMessage = (m) => {
         log.push(m);
         setImmediate(() => {
           if (m.type === 'init') proc.emit('message', { type: 'ready', features: { mt: true, voice: true } });
-          else if (m.type === 'job' && m.op === 'translate') proc.emit('message', { type: 'result', id: m.id, text: '[' + m.to + '] ' + m.text });
+          else if (m.type === 'job' && m.op === 'warm') proc.emit('message', { type: 'result', id: m.id, mt: true, voice: true });
+          else if (m.type === 'job' && m.op === 'translate') proc.emit('message', { type: 'result', id: m.id, text: translate ? translate(m) : '[' + m.to + '] ' + m.text });
           else if (m.type === 'job' && m.op === 'synth') proc.emit('message', { type: 'result', id: m.id, pcm: new Float32Array(240).buffer, rate: 24000 });
           else if (m.type === 'job' && m.op === 'speaker') proc.emit('message', { type: 'result', id: m.id, emb: new Float32Array(256).buffer });
           else if (m.type === 'ensure') proc.emit('message', { type: 'ensured', what: m.what });
@@ -37,7 +39,7 @@ function make(overrides = {}) {
   const handlers = {};
   const v = setupVoice({
     app: { getPath: () => dir, getPreferredSystemLanguages: () => ['en-US'], getLocale: () => 'en-US' },
-    store, handle: (ch, fn) => { handlers[ch] = fn; }, utilityProcess: fakeEngine(log),
+    store, handle: (ch, fn) => { handlers[ch] = fn; }, utilityProcess: fakeEngine(log, overrides.translate, overrides.procs),
     showBox: async () => ({ response: 0, checkboxChecked: false }), event() {}, pushState() {},
     transcribe: overrides.transcribe || (async () => ({ text: 'hello there', language: 'es' })),
     speechReady: () => true, downloadSpeech: async () => {}, modelsRoot: dir, fetch: async () => { throw new Error('offline'); }
@@ -154,4 +156,49 @@ test('the feature is only offered when its engine files ship', () => {
   const { v } = make();
   const src = path.join(__dirname, '..', 'src', 'voice');
   assert.equal(v.available(), fs.existsSync(path.join(src, 'mt-local.js')) && fs.existsSync(path.join(src, 'voiceclone.js')));
+});
+
+test('audio travels between the app and the engine as plain JSON and comes back identical', () => {
+  const { encode, decode } = require('../src/voice-ipc');
+  const f = new Float32Array([0.5, -0.25, 1]);
+  const msg = { type: 'job', id: 3, op: 'synth', text: 'hola', emb: f, nested: { pcm: new Int16Array([1, -2, 3]).buffer, list: [Buffer.from([9, 8])] } };
+  const wire = JSON.parse(JSON.stringify(encode(msg)));
+  const back = decode(wire);
+  assert.equal(back.text, 'hola');
+  assert.deepEqual([...new Float32Array(back.emb)], [0.5, -0.25, 1]);
+  assert.deepEqual([...new Int16Array(back.nested.pcm)], [1, -2, 3]);
+  assert.deepEqual([...new Uint8Array(back.nested.list[0])], [9, 8]);
+  assert.equal(encode(null), null);
+  assert.deepEqual(decode({ a: { __bin: 'AQI=', extra: 1 } }).a, { __bin: 'AQI=', extra: 1 }, 'a lookalike object is left alone');
+});
+
+test('a translation that is just the same words is not spoken back', async () => {
+  const { v } = make({ translate: (m) => m.text });
+  v._test.setSession(v._test.newSession());
+  const r = await v._test.handleClip('in', clip(2), { seq: 1 });
+  assert.equal(r.skipped, 'same-language');
+});
+
+test('a long clip is detected afresh; only a short one follows the recent language of the call', async () => {
+  const seen = [];
+  const { v } = make({ transcribe: async (buf, hint) => { seen.push(hint); return { text: 'hola', language: 'es' }; } });
+  const sess = v._test.newSession();
+  sess.recent.in = ['es', 'es', 'es'];
+  v._test.setSession(sess);
+  await v._test.handleClip('in', clip(1), { seq: 1 });      // short: follows the votes
+  await v._test.handleClip('in', clip(5), { seq: 2 });      // long: auto
+  assert.deepEqual(seen, ['es', 'auto']);
+});
+
+test('an engine that dies during a call is started again by the next clip, which is skipped meanwhile', async () => {
+  const procs = [];
+  const { v, log } = make({ procs });
+  v._test.setSession(v._test.newSession());
+  await v._test.handleClip('in', clip(2), { seq: 1 });     // starts the first engine
+  procs[0].emit('exit', 1);                                // it crashes
+  const r = await v._test.handleClip('in', clip(2), { seq: 2 });
+  assert.equal(r.skipped, 'restarting');
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal(procs.length, 2, 'a second engine process was started');
+  assert.ok(log.some((m) => m.op === 'warm'), 'and warmed up');
 });

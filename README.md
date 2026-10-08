@@ -23,6 +23,7 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - **Back** from the mouse's side button, `Alt+Left` or the Windows back key: closes a preview, goes up a Settings page, then closes the open chat
 - **For places where WhatsApp needs a VPN or proxy** (mainland China, Russia ...): Relay follows the Windows proxy; Relay panel > Network takes a proxy address; the model download falls back to a mirror (hf-mirror.com); the Relay panel, captions notice and the "can't reach WhatsApp" screen speak Chinese and Russian
 - **Add-ons**: the speech models are not bundled; Relay offers the 60 MB one on first start and the Relay panel lists them. **Transcript** (panel footer) turns a call recording into a `.txt` and `.srt`. **Right-click a message > Translate** works for one message or for ticked messages
+- **Live voice translation** (button on the call, or `T`): what the other person says is translated and spoken in a copy of *their* voice, while the original is turned down; your own voice goes to them translated, in a copy of *yours*, after a spoken notice that the call is translated automatically. Runs on your PC (translator on the graphics card; about 3 GB of models downloaded once, after a notice). Speaks English, Hindi, Chinese, Russian and Spanish; listens in any language. Expect about 2.5-4 s of delay per sentence, and a voice that moves towards the speaker's rather than matching it
 - Screen stays awake during calls; on-demand call engine and idle trimming keep RAM down
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
@@ -86,7 +87,7 @@ src/page/        in-page panel, translation, call keys, captions, back, sharper 
 src/hub.js       panel settings, consent, translation requests, proxy and language choice
 src/captions.js  live captions: speech model, engine process, translation (unit tested)
 src/captions-engine.js  whisper.cpp in a utility process
-src/voice.js, voice-engine.js  live voice translation (in progress: the engine modules in src/voice/ are not shipped yet, so the feature stays hidden)
+src/voice.js, voice-engine.js, voice-ipc.js, voice/  live voice translation (the engine runs in a bundled Node.js process, tools/get-node.js fetches it at build time)
 src/picker*, prompt*, about.html, offline.html  small native-style windows and the offline screen
 src/vendor/      RNNoise (noise suppression)
 src/assets/installer.nsh  Windows registration done by the installer (App Paths, Default apps, clean uninstall)

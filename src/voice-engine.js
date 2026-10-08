@@ -11,7 +11,13 @@
  * Nothing here touches the network except downloading models, and nothing is written except the models themselves.
  */
 
-const port = process.parentPort;
+// Runs in a plain Node.js process started by src/main.js (child_process.fork with IPC); under Electron's utilityProcess it would also work
+// except for the speech-synthesis library, which Electron refuses (external buffers).
+const { encode, decode } = require('./voice-ipc');
+const port = process.parentPort || (process.send ? {
+  on: (ev, fn) => process.on('message', (m) => fn({ data: decode(m) })),
+  postMessage: (m) => process.send(encode(m))
+} : null);
 const send = (m, transfer) => { try { port.postMessage(m, transfer); } catch (e) { /* the parent is gone */ } };
 
 let mt = null, vc = null, translator = null, voice = null;
@@ -50,6 +56,15 @@ async function getVoice() {
 const toF32 = (ab) => new Float32Array(ab.buffer ? ab.buffer.slice(ab.byteOffset, ab.byteOffset + ab.byteLength) : ab);
 
 async function job(m) {
+  if (m.op === 'warm') {
+    // Loads both models and runs one tiny job through each, so the first sentence of a call is not the one that pays for it.
+    const out = { mt: false, voice: false };
+    try { const t = await getTranslator(); await t.translate('Good morning', 'en', 'es'); out.mt = true; } catch (e) { out.mtError = String((e && e.message) || e); }
+    const v = await getVoice();
+    await v.synth('Hello.', 'en', null);
+    out.voice = true;
+    return out;
+  }
   if (m.op === 'translate') {
     const t = await getTranslator();
     return { text: await t.translate(String(m.text || ''), String(m.from || 'auto'), String(m.to || 'en')) };
