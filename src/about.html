@@ -2,21 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">
 <title>About Relay</title>
 <style>
+  @font-face { font-family: "Relay Serif"; font-weight: 500; src: url("data:font/woff2;base64,{{FONT}}") format("woff2"); }
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    background: #0e1621;
+    background: radial-gradient(120% 140px at 0% 0%, rgba(82, 136, 193, .20), transparent 100%), #111921;
     color: #d6dde6;
     font: 14px/1.55 "Segoe UI", system-ui, sans-serif;
   }
   main { max-width: 600px; margin: 0 auto; padding: 28px 28px 36px; }
   header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
   header img { width: 64px; height: 64px; border-radius: 14px; }
-  h1 { margin: 0; font-size: 26px; color: #fff; letter-spacing: .2px; }
+  h1 { margin: 0; font: 500 32px/1.1 "Relay Serif", Georgia, serif; color: #fff; letter-spacing: .2px; }
   .sub { margin: 2px 0 0; color: #8e9bb0; }
   h2 { margin: 26px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #5288c1; }
   p { margin: 0 0 8px; }
@@ -24,7 +25,7 @@
   a:hover { text-decoration: underline; }
   .versions {
     margin-top: 22px; padding: 10px 14px; border-radius: 10px;
-    background: #17212b; color: #8e9bb0; font-size: 12.5px;
+    background: #172029; color: #8e9bb0; font-size: 12.5px;
   }
   .versions b { color: #d6dde6; font-weight: 600; }
   .links { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
@@ -42,7 +43,7 @@
   </header>
 
   <h2>What Relay is</h2>
-  <p>Relay is a desktop window around WhatsApp Web (web.whatsapp.com). Everything you do in it &mdash; messaging, voice and video calls, media, your account and your data &mdash; is WhatsApp&rsquo;s own software and service, loaded directly from WhatsApp&rsquo;s servers. Relay only adds the window, tray icon, notifications, theme, layout and call-quality tweaks around it.</p>
+  <p>Relay is a desktop window around WhatsApp Web (web.whatsapp.com). Everything you do in it &mdash; messaging, voice and video calls, media, your account and your data &mdash; is WhatsApp&rsquo;s own software and service, loaded directly from WhatsApp&rsquo;s servers. Relay only adds the window, tray icon, notifications, theme, layout call-quality tweaks, and optional translation of incoming messages around it.</p>
 
   <h2>Not affiliated</h2>
   <p>Relay is an independent project made for personal use. It is not affiliated with, authorised, maintained, sponsored or endorsed by WhatsApp LLC, Meta Platforms, Inc. or any of their affiliates. WhatsApp and the WhatsApp logo are trademarks of their respective owners; the name appears here only to say what Relay connects to. Relay&rsquo;s own name and icon are not WhatsApp&rsquo;s.</p>
@@ -51,13 +52,13 @@
   <p>Using WhatsApp is subject to WhatsApp&rsquo;s <a href="https://www.whatsapp.com/legal/terms-of-service">Terms of Service</a> and <a href="https://www.whatsapp.com/legal/privacy-policy">Privacy Policy</a>. WhatsApp does not provide or support third-party clients and may change, limit or block access at any time, including for accounts that use them. You use Relay at your own risk.</p>
 
   <h2>What Relay changes, on this computer only</h2>
-  <p>To behave like a desktop app, Relay changes how WhatsApp Web looks and acts here: colours and layout, hiding browser-only prompts, switching on the calling feature in the page, and improving your own camera and microphone before WhatsApp receives them. Nothing is changed on WhatsApp&rsquo;s servers, and nothing is sent to anyone other than WhatsApp.</p>
+  <p>To behave like a desktop app, Relay changes how WhatsApp Web looks and acts here: colours and layout, hiding browser-only prompts, switching on the calling feature in the page, and improving your own camera and microphone before WhatsApp receives them. Nothing is changed on WhatsApp&rsquo;s servers.</p>
 
   <h2>Privacy</h2>
-  <p>Relay has no servers, accounts or analytics. It does not read, copy or store your messages. Your login session and settings stay on this PC (%APPDATA%\Relay). Network traffic goes to WhatsApp and, for update checks, to GitHub. Known analytics and crash-report addresses used by the WhatsApp page are blocked unless you turn that off in the tray menu.</p>
+  <p>Relay has no servers, accounts or analytics. It does not store your messages. Your login session, settings and quick replies stay on this PC (%APPDATA%\Relay). Network traffic goes to WhatsApp and, for update checks, to GitHub. If you turn on chat translation, the text of incoming messages in the chats you choose is sent to the translator you pick (OpenRouter or Anthropic with your own API key, or Google Translate) &mdash; only after you agree, never your own messages, and never stored by Relay. Known analytics and crash-report addresses used by the WhatsApp page are blocked unless you turn that off in the tray menu.</p>
 
   <h2>Open source</h2>
-  <p>Relay is free software under the MIT License, Copyright &copy; 2026 nikhlgoel, provided &ldquo;as is&rdquo; without warranty of any kind. It is built with Electron (MIT) and Chromium (BSD-style and other open-source licences; see LICENSES.chromium.html in the install folder), plus electron-store and electron-updater (MIT).</p>
+  <p>Relay is free software under the MIT License, Copyright &copy; 2026 nikhlgoel, provided &ldquo;as is&rdquo; without warranty of any kind. It is built with Electron (MIT) and Chromium (BSD-style and other open-source licences; see LICENSES.chromium.html in the install folder), plus electron-store and electron-updater (MIT). Noise suppression uses RNNoise (BSD-3-Clause, Xiph.Org and Mozilla) through @sapphi-red/web-noise-suppressor (MIT); interface icons are Material Design icons (Apache-2.0); the title typeface is Newsreader (SIL Open Font License 1.1).</p>
 
   <div class="versions">
     <b>Relay</b> {{VERSION}} &nbsp;&middot;&nbsp; <b>Electron</b> {{ELECTRON}} &nbsp;&middot;&nbsp; <b>Chromium</b> {{CHROMIUM}} &nbsp;&middot;&nbsp; <b>Node</b> {{NODE}}

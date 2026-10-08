@@ -32,18 +32,25 @@ function deepLinkToWebUrl(url) {
 
 /**
  * Should this URL be handed to the OS (default browser / mail client)?
- * Everything not allowed here is dropped, because shell.openExternal will
- * happily launch any registered protocol handler (ms-msdt:, file:, ...).
+ * Web links, plain mailto: and tel: links. Everything else is dropped, because
+ * shell.openExternal will happily launch any registered protocol handler
+ * (ms-msdt:, file:, ...).
  */
 function shouldOpenExternally(url) {
-  // TODO(human): decide the policy for non-web links (mailto:, tel:, ...).
-  // Baseline: web links only.
   try {
     const { protocol } = new URL(url);
-    return protocol === 'https:' || protocol === 'http:';
+    if (protocol === 'https:' || protocol === 'http:') return true;
+    // Email addresses and phone numbers in chats should work, but only in their plain form:
+    // no attachment parameters (some mail clients would attach a local file), no extra schemes.
+    if (protocol === 'mailto:') return MAILTO.test(url) && url.length < 2000;
+    if (protocol === 'tel:') return TEL.test(url);
+    return false;
   } catch {
     return false;
   }
 }
+
+const MAILTO = /^mailto:[^?#\s]*(\?(subject|body|cc|bcc)=[^&#\s]*(&(subject|body|cc|bcc)=[^&#\s]*)*)?$/i;
+const TEL = /^tel:\+?[0-9()\-.\s]{3,24}$/i;
 
 module.exports = { isWhatsAppWebUrl, isWhatsAppOwnedUrl, deepLinkToWebUrl, shouldOpenExternally };

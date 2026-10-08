@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>Relay</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px 24px; height: 100vh; display: flex; flex-direction: column;
+    background: radial-gradient(120% 90% at 0% 0%, rgba(var(--relay-accent-rgb, 82, 136, 193), .20), transparent 55%), var(--relay-1, #111921);
+    color: #e6edf3; font: 14px/1.45 "Segoe UI", system-ui, sans-serif; -webkit-user-select: none; user-select: none;
+  }
+  h1 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  p { margin: 0 0 14px; color: #8fa1b3; font-size: 12.5px; }
+  input {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.08);
+    background: var(--relay-3, #1e2935); color: #e6edf3; font: 13px Consolas, monospace; outline: none; -webkit-user-select: text; user-select: text;
+  }
+  input:focus { border-color: var(--relay-accent, #5288c1); box-shadow: 0 0 0 3px rgba(var(--relay-accent-rgb, 82, 136, 193), .25); }
+  .err { min-height: 18px; margin-top: 8px; color: #f08d8d; font-size: 12px; }
+  .row { margin-top: auto; display: flex; justify-content: flex-end; gap: 10px; }
+  button {
+    padding: 8px 18px; border-radius: 10px; border: 0; font: 600 13px "Segoe UI", sans-serif; cursor: pointer;
+    background: rgba(255,255,255,.07); color: #e6edf3;
+  }
+  button:hover { background: rgba(255,255,255,.12); }
+  button.primary { background: var(--relay-accent, #5288c1); color: var(--relay-on-accent, #fff); }
+  button.primary:hover { background: var(--relay-accent-strong, #639ad9); }
+</style>
+</head>
+<body>
+  <h1 id="t">API key</h1>
+  <p id="d">Used only to translate chats. Stored encrypted on this PC and never shown to the page.</p>
+  <input id="k" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" autofocus>
+  <div class="err" id="e"></div>
+  <div class="row">
+    <button id="c">Cancel</button>
+    <button id="s" class="primary">Save</button>
+  </div>
+<script>
+  const WHO = {
+    openrouter: ['OpenRouter API key', 'Free to create at openrouter.ai/keys. Used only to translate chats with free models. Stored encrypted on this PC and never shown to the page.', 'sk-or-v1-...'],
+    claude: ['Anthropic API key', 'Used only to translate chats in your own tone. Stored encrypted on this PC and never shown to the page.', 'sk-ant-...']
+  };
+  const who = WHO[new URLSearchParams(location.search).get('p')];
+  if (who) { document.getElementById('t').textContent = who[0]; document.getElementById('d').textContent = who[1]; document.getElementById('k').placeholder = who[2]; }
+  const k = document.getElementById('k'), e = document.getElementById('e');
+  const save = () => {
+    const v = k.value.trim().replace(/^bearer\s+/i, '');
+    if (!/^[\w.-]{20,300}$/.test(v)) { e.textContent = 'That does not look like an API key.'; return; }
+    relayPrompt.submit(v);
+  };
+  document.getElementById('s').onclick = save;
+  document.getElementById('c').onclick = () => relayPrompt.cancel();
+  k.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); if (ev.key === 'Escape') relayPrompt.cancel(); });
+</script>
+</body>
+</html>

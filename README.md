@@ -9,18 +9,22 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Frameless window; the header areas drag the window
 - Tray icon, close-to-tray, start with Windows, global show/hide shortcut
 - Native notifications; clicking one brings the window forward
-- Unread badge on the taskbar icon
+- Unread badge on the taskbar icon (in your theme colour)
+- Offline? A "can't reach WhatsApp" screen appears and Relay reconnects by itself
 - Voice and video calls with screen sharing and a full-screen button on the call window. WhatsApp Web only offers calls to accounts it has enabled for; Relay switches that flag on locally, like the official Windows app (tray: **Enable calling**). Whether a call connects is up to WhatsApp's servers
+- Call keys: `M` mute, `V` camera, `S` share screen, `F` full screen, `R` record. The pop-out call window comes back where you left it
+- Screen sharing with a thumbnail picker; Relay's own windows are left out of the capture, so there is no mirror effect
 - Call recording to `Videos/WA` (button in the call toolbar, or automatic; saved as it goes and closed when the call ends)
-- Screen sharing: hide your own shared-screen preview with one button
-- Screen stays awake during calls
-- Low-memory mode and an on-demand call engine (tray) keep RAM down
-- Call quality: GPU camera cleanup (face-weighted exposure, shadow lift, colour correction, denoise, sharpen) and voice EQ, compression and limiting (tray toggles)
+- Call quality: neural noise suppression (RNNoise), voice EQ and levelling, and a GPU camera cleanup (face-weighted exposure, shadow lift, colour, denoise, sharpen)
+- **Translate chats**: incoming messages in any language appear under the original in casual, chat-style English. Per chat (button in the chat header) or for all chats. Best with a free OpenRouter key (free models), or your own Claude key; Google Translate works with no key. It asks before any text is sent
+- **Relay panel** (button at the foot of the left rail): translation, do not disturb, call settings and quick replies in one place
+- Screen stays awake during calls; on-demand call engine and idle trimming keep RAM down
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
-- Context-aware right-click menu (links, images, text, inputs)
-- Dark by default; your choice in WhatsApp settings is kept
-- Optional privacy blur and telemetry blocking
+- Context-aware right-click menu (links, images, text, inputs); email and phone links open in your mail or phone app; a notice when a download finishes
+- Dark by default; the whole look (glow, accents, surfaces) follows the chat theme colour you pick in WhatsApp, else your Windows accent colour
+- Smooth mouse-wheel scrolling in the chat list and side panels
+- Do not disturb, optional privacy blur and telemetry blocking
 - Browser-only prompts (download banner, "stay logged in", sign-up) removed
 
 ## Disclaimer
@@ -44,7 +48,7 @@ npm test           # unit tests
 npm run dist       # installer + portable build in dist/
 ```
 
-`npm run start:debug` also opens the DevTools protocol on `127.0.0.1:9222`.
+`npm start` first gives the development `electron.exe` Relay's icon and name (once; `tools/brand-electron.js`), so the taskbar shows Relay instead of the Electron atom. `npm run start:debug` also opens the DevTools protocol on `127.0.0.1:9222`.
 
 ## Usage
 
@@ -67,7 +71,10 @@ Settings are in `%APPDATA%\Relay\config.json`.
 
 ```
 src/main.js      window, tray, permissions, screen share, updates
-src/preload.js   unread badge, notifications, layout, call quality
+src/preload.js   unread badge, notifications, layout, call quality, panel bridge
+src/page/        in-page panel, translation, call keys
+src/hub.js       panel settings, consent, translation requests
+src/translate.js translation back-ends (unit tested)
 src/theme.css    theme and layout styling
 src/urls.js      URL allow-list (unit tested)
 test/            unit tests

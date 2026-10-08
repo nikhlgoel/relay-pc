@@ -46,8 +46,23 @@ test('shouldOpenExternally never hands dangerous schemes to the OS', () => {
     'ms-msdt:/id PCWDiagnostic',
     'javascript:alert(1)',
     'smb://attacker/share',
-    'not a url'
+    'not a url',
+    'mailto:a@b.example?attach=C:/Users/me/secrets.txt',        // would attach a local file
+    'mailto:a@b.example?subject=hi&attachment=x',
+    'tel:+1555;ext=1;phone-context=evil',
+    'tel:javascript:alert(1)'
   ]) {
     assert.equal(shouldOpenExternally(bad), false, bad);
+  }
+});
+
+test('shouldOpenExternally allows plain email and phone links', () => {
+  for (const ok of [
+    'mailto:friend@example.com',
+    'mailto:friend@example.com?subject=Hello%20there&body=Hi',
+    'tel:+919876543210',
+    'tel:(555) 123-4567'
+  ]) {
+    assert.equal(shouldOpenExternally(ok), true, ok);
   }
 });

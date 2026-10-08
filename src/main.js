@@ -6,13 +6,14 @@ process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', 
 const {
   app, BrowserWindow, Tray, Menu, shell, session, clipboard,
   nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer, nativeTheme,
-  Notification, powerSaveBlocker
+  Notification, powerSaveBlocker, safeStorage, net, webContents
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
 
 const { autoUpdater } = require('electron-updater');
+const { setupHub } = require('./hub');
 const {
   isWhatsAppWebUrl, isWhatsAppOwnedUrl, deepLinkToWebUrl, shouldOpenExternally
 } = require('./urls');
@@ -31,7 +32,23 @@ if (currentProfile !== 'default') {
   app.setPath('userData', app.getPath('userData') + '-' + currentProfile);
 }
 
-const store = new Store({
+/**
+ * Settings live in config.json. If the file is empty or cut short (a crash or power cut
+ * while it was being written), electron-store throws and Relay would not start at all.
+ * The damaged file is kept aside as config.damaged-<time>.json and a fresh one is used.
+ */
+function openStore(options) {
+  try {
+    return new Store(options);
+  } catch (err) {
+    const file = path.join(app.getPath('userData'), 'config.json');
+    try { fs.renameSync(file, path.join(path.dirname(file), 'config.damaged-' + Date.now() + '.json')); } catch (e) { /* nothing to move */ }
+    console.error('Settings file was unreadable and has been set aside:', err && err.message);
+    return new Store(options);
+  }
+}
+
+const store = openStore({
   defaults: {
     bounds: { width: 1200, height: 800 },
     maximized: false,
@@ -40,7 +57,7 @@ const store = new Store({
     zoom: 0,
     paneWidth: 0,
     hardwareAcceleration: true,
-      privacyBlur: false,
+    privacyBlur: false,
     lowPower: true,
     blockTelemetry: true,
     // Call quality (see preload.js). The camera path costs a canvas copy of
@@ -52,11 +69,35 @@ const store = new Store({
     // Start WhatsApp's call engine (WebAssembly + ~20 worker threads) on the first
     // call instead of at launch. Saves a few hundred MB while idle.
     lazyCallEngine: true,
-    lowMemory: true,
     // Record every call from the moment it connects (needs the one-time consent).
-    autoRecord: false
+    autoRecord: false,
+    // In-app Relay panel (src/hub.js)
+    noiseSuppression: true,
+    dnd: false,
+    translateAll: false,
+    snippets: []
   }
 });
+
+// Hand-edited or damaged settings: any value of the wrong type is dropped (the default applies).
+(function sanitizeStore() {
+  const shapes = {
+    bounds: 'object', callBounds: 'object', maximized: 'boolean', minimizeToTray: 'boolean', startMinimized: 'boolean',
+    zoom: 'number', paneWidth: 'number', hardwareAcceleration: 'boolean', privacyBlur: 'boolean', lowPower: 'boolean',
+    blockTelemetry: 'boolean', enhanceCamera: 'boolean', enhanceMic: 'boolean', webCalling: 'boolean',
+    lazyCallEngine: 'boolean', autoRecord: 'boolean', noiseSuppression: 'boolean', dnd: 'boolean', translateAll: 'boolean',
+    snippets: 'array', recordingsDir: 'string', recordingConsentAck: 'boolean', translateChoice: 'string',
+    translateConsent: 'object', translateKeys: 'object', translateKeyEnc: 'string', appIdentity: 'string'
+  };
+  const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
+  for (const [key, want] of Object.entries(shapes)) {
+    if (store.has(key) && kind(store.get(key)) !== want) store.delete(key);
+  }
+  for (const key of ['zoom', 'paneWidth']) {
+    if (store.has(key) && !Number.isFinite(store.get(key))) store.delete(key);
+  }
+  if (store.has('zoom')) store.set('zoom', Math.max(-3, Math.min(3, store.get('zoom'))));
+})();
 
 const WHATSAPP_URL = 'https://web.whatsapp.com/';
 const debugPerms = Boolean(process.env.RELAY_DEBUG_PERMS);   // logs permission + popup decisions
@@ -130,10 +171,8 @@ function configureRuntime() {
   // Electron exposes it but never completes requestWindow(), so the pop-out was a
   // blank white window. Without the API WhatsApp uses its classic pop-out window.
   app.commandLine.appendSwitch('disable-blink-features', 'DocumentPictureInPictureAPI');
-  // Chromium's low-memory profile: smaller image-decode and raster caches. Measured
-  // on a signed-in profile it cut the main renderer from ~415 to ~347 MB with no
-  // change to call quality (same frames, size and rate in a WebRTC loopback).
-  if (store.get('lowMemory')) app.commandLine.appendSwitch('enable-low-end-device-mode');
+  // Not enable-low-end-device-mode: it paints in 512x256 low-colour tiles, which showed up as
+  // banded gradients and mismatched rectangles. Memory is trimmed another way (see trimRendererMemory).
   app.commandLine.appendSwitch('disk-cache-size', String(96 * 1024 * 1024));
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -156,18 +195,33 @@ nativeTheme.themeSource = 'dark';
 // toast notifications, taskbar grouping and Jump Lists on it. A different value
 // detaches all three. It is a constant because electron-builder removes the
 // 'build' section from the package.json inside the packaged app.
-app.setAppUserModelId('com.nikhlgoel.relay');
+const APP_ID = 'com.nikhlgoel.relay';
+app.setAppUserModelId(APP_ID);
 
 let mainWindow = null;
 let tray = null;
+let hub = null;
 let isQuitting = false;
 
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('whatsapp', process.execPath, [path.resolve(process.argv[1])]);
+// whatsapp:// links open in Relay - unless another app (the official WhatsApp) already owns them,
+// in which case Relay leaves them alone instead of silently stealing them on every start.
+if (!process.env.RELAY_TEST) {
+  let owner = '';
+  try { owner = app.getApplicationNameForProtocol('whatsapp://') || ''; } catch (e) { /* unknown */ }
+  if (!owner || app.isDefaultProtocolClient('whatsapp')) {
+    if (process.defaultApp) {
+      if (process.argv.length >= 2) app.setAsDefaultProtocolClient('whatsapp', process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient('whatsapp');
+    }
   }
-} else {
-  app.setAsDefaultProtocolClient('whatsapp');
+}
+
+/** What Windows should start at login. A development run needs the app folder too, a portable build its own file. */
+function loginItem(openAtLogin) {
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const args = app.isPackaged ? [] : [app.getAppPath()];
+  return { openAtLogin, path: exe, args };
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -187,6 +241,78 @@ if (!gotLock) {
 function asset(name) {
   return path.join(__dirname, 'assets', name);
 }
+
+// ---------------------------------------------------------------------------
+// Icon identity on Windows. A window's own icon is not always what the taskbar shows:
+// it can fall back to the icon of the .exe, which for a development run is Electron's
+// atom. So Relay also tells the shell, explicitly, which icon and name belong to its
+// app id (taskbar button, pinning, jump list) and registers that id for notifications.
+// ---------------------------------------------------------------------------
+const WINDOW_ICON = asset(process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+let relayIcoPath = asset('icon.ico');
+
+/** The shell cannot read inside the asar, so a packaged build keeps a copy of the icon in its data folder. */
+function prepareIconFile() {
+  if (!app.isPackaged) return;
+  try {
+    const dst = path.join(app.getPath('userData'), 'relay.ico');
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.writeFileSync(dst, fs.readFileSync(asset('icon.ico')));
+    relayIcoPath = dst;
+  } catch (e) { /* the window icon still applies */ }
+}
+
+const quoteArg = (s) => (/[\s"]/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s);
+
+/** Taskbar identity for one window (main, call pop-out, About, pickers). */
+function brandWindow(win) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+  try {
+    const args = process.argv.slice(1).filter((a) => a.startsWith('--profile='));
+    const relaunch = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), ...args].map(quoteArg).join(' ');
+    win.setAppDetails({
+      appId: APP_ID,
+      appIconPath: relayIcoPath,
+      appIconIndex: 0,
+      relaunchCommand: relaunch,
+      relaunchDisplayName: 'Relay'
+    });
+  } catch (e) { console.warn('[brand] taskbar identity not applied:', e.message); }   // cosmetic: never block a window over it
+}
+
+/** Gives Windows notifications Relay's name and icon (HKCU, this user only, once per icon location). */
+function registerAppIdentity() {
+  if (process.platform !== 'win32') return;
+  const stamp = relayIcoPath + '|' + app.getVersion();
+  if (store.get('appIdentity') === stamp) return;
+  const key = 'HKCU\\Software\\Classes\\AppUserModelId\\' + APP_ID;
+  const add = (name, value) => new Promise((resolve) =>
+    require('child_process').execFile('reg', ['add', key, '/v', name, '/d', value, '/f'], { windowsHide: true }, (err) => resolve(!err)));
+  Promise.all([add('DisplayName', 'Relay'), add('IconUri', relayIcoPath), add('IconBackgroundColor', 'FF111921')])
+    .then((ok) => { if (ok.every(Boolean)) store.set('appIdentity', stamp); });
+}
+
+/** A desktop notification from Relay itself (never while automated tests run on someone's PC). */
+function toast(title, body, onClick) {
+  if (process.env.RELAY_TEST || !Notification.isSupported()) return;
+  try {
+    const n = new Notification({ title, body, silent: true, icon: APP_ICON });
+    if (onClick) n.on('click', onClick);
+    n.show();
+  } catch (e) { /* notifications unavailable */ }
+}
+
+// Every dialog, notification and window carries Relay's icon - none falls back to
+// Electron's. (Windows draws a toast's image from the AppUserModelId's shortcut,
+// which an unpackaged dev run does not have, so toasts are given the icon directly.)
+const APP_ICON = nativeImage.createFromPath(asset('icon.png'));   // dialogs and toasts want an image, not a file
+/** A dialog owned by a hidden or minimised window can open out of sight, so then it has no owner. */
+const visibleOwner = (w) => (w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() ? w : undefined);
+const showBox = (win, opts) => {
+  const owner = opts ? visibleOwner(win) : undefined;
+  const options = { icon: APP_ICON, ...(opts || win) };
+  return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
+};
 
 function getSystemAccent() {
   if (process.platform === 'win32') {
@@ -218,23 +344,32 @@ function getSystemAccent() {
       }
     } catch {}
   }
-  return { hex: '#bf5611', rgb: '191, 86, 17' };
+  return { hex: '#5288c1', rgb: '82, 136, 193' };
 }
 
 /** Saved bounds, or defaults if the monitor they were on is gone. Restoring a
  *  window to a disconnected display leaves it off-screen with no way back. */
-function restorableBounds() {
-  const saved = store.get('bounds');
-  if (typeof saved.x !== 'number' || typeof saved.y !== 'number') return saved;
+function restorableBounds(key = 'bounds') {
+  const saved = store.get(key);
+  if (!saved || ![saved.width, saved.height].every(Number.isFinite)) return {};
+  const area = screen.getPrimaryDisplay().workArea;
+  const small = key === 'callBounds' ? [320, 240] : [620, 480];
+  const size = {
+    width: Math.round(Math.min(area.width, Math.max(small[0], saved.width))),
+    height: Math.round(Math.min(area.height, Math.max(small[1], saved.height)))
+  };
+  if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return size;
   const onScreen = screen.getAllDisplays().some(({ workArea: a }) =>
-    saved.x < a.x + a.width - 80 && saved.x + saved.width > a.x + 80 &&
-    saved.y < a.y + a.height - 40 && saved.y + saved.height > a.y);
-  return onScreen ? saved : { width: saved.width, height: saved.height };
+    saved.x < a.x + a.width - 80 && saved.x + size.width > a.x + 80 &&
+    saved.y < a.y + a.height - 40 && saved.y + size.height > a.y);
+  return onScreen ? { ...size, x: Math.round(saved.x), y: Math.round(saved.y) } : size;
 }
 
 function createWindow() {
   const bounds = restorableBounds();
 
+  prepareIconFile();
+  registerAppIdentity();
   mainWindow = new BrowserWindow({
     ...bounds,
     minWidth: 620,
@@ -254,7 +389,7 @@ function createWindow() {
     // fought Windows' maximize/resize handling) for no visible gain.
     backgroundColor: '#0e1621',
     title: 'Relay',
-    icon: asset('icon.png'),
+    icon: WINDOW_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       partition: currentPartition,
@@ -269,6 +404,7 @@ function createWindow() {
     }
   });
 
+  brandWindow(mainWindow);
   if (store.get('maximized')) mainWindow.maximize();
 
   const ses = mainWindow.webContents.session;
@@ -311,6 +447,16 @@ function createWindow() {
       isTrusted(requestingOrigin || wc.getURL());
   });
 
+  // Downloads keep Electron's Save As dialog; once one finishes, say so and offer the folder.
+  ses.removeAllListeners('will-download');                // createWindow can run again (tray, taskbar): one listener only
+  ses.on('will-download', (_e, item) => {
+    item.once('done', (_ev, state) => {
+      if (state !== 'completed') return;
+      const file = item.getSavePath();
+      toast('Download complete', path.basename(file), () => shell.showItemInFolder(file));
+    });
+  });
+
   // Allow enumerating and selecting audio/video hardware devices
   ses.setDevicePermissionHandler((details) => isTrusted(details.origin));
 
@@ -318,9 +464,17 @@ function createWindow() {
   ses.setDisplayMediaRequestHandler(pickDisplaySource, { useSystemPicker: false });
 
   // Theme + layout styling lives in theme.css and is re-injected on every load.
-  mainWindow.webContents.on('dom-ready', () => {
-    mainWindow.webContents.insertCSS(THEME_CSS).catch(() => {});
-  });
+  // Inserted as soon as the document commits, so the loading screen is already
+  // themed instead of flashing WhatsApp's grey first; dom-ready is the fallback.
+  let cssFor = null;
+  const insertTheme = () => {
+    const id = mainWindow.webContents.getURL();
+    if (cssFor === id) return;
+    cssFor = id;
+    mainWindow.webContents.insertCSS(THEME_CSS).catch(() => { cssFor = null; });
+  };
+  mainWindow.webContents.on('did-navigate', () => { cssFor = null; insertTheme(); });
+  mainWindow.webContents.on('dom-ready', insertTheme);
 
   let initialUrl = WHATSAPP_URL;
   const deepLinkArg = process.argv.find(arg => arg.startsWith('whatsapp://'));
@@ -329,15 +483,24 @@ function createWindow() {
   mainWindow.loadURL(initialUrl);
 
 
+  // RELAY_TEST=hidden never shows the window; =offscreen shows it far off-screen
+  // (so it renders and can be resized like a real one). For automated tests only:
+  // nothing may pop up while someone is using the PC.
+  const testMode = process.env.RELAY_TEST || '';
+  const showMain = () => {
+    if (testMode === 'hidden') return;
+    if (testMode === 'offscreen') { mainWindow.setSkipTaskbar(true); mainWindow.setPosition(-32000, -32000); mainWindow.showInactive(); return; }
+    mainWindow.show();
+  };
   mainWindow.once('ready-to-show', () => {
-    if (!store.get('startMinimized')) mainWindow.show();
+    if (!store.get('startMinimized')) showMain();
     const z = store.get('zoom');
     if (z) mainWindow.webContents.setZoomLevel(z);
   });
 
   setTimeout(() => {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !store.get('startMinimized')) {
-      mainWindow.show();
+      showMain();
     }
   }, 1500);
 
@@ -359,7 +522,9 @@ function createWindow() {
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
           backgroundColor: '#0e1621',
-          icon: asset('icon.png')
+          icon: WINDOW_ICON,
+          // The call window comes back where and as big as you left it.
+          ...(url === 'about:blank' ? restorableBounds('callBounds') : {})
         }
       };
     }
@@ -394,19 +559,48 @@ function createWindow() {
   // File/Edit/View bar that the main window's menu would otherwise give it.
   mainWindow.webContents.on('did-create-window', (child, details) => {
     child.setMenu(null);
-    if (details.url === 'about:blank') child.setAlwaysOnTop(true, 'floating');
-  });
-
-  // Offline at launch (or a DNS blip): retry with a growing delay, and stop
-  // hammering once the page loads.
-  let loadRetries = 0;
-  mainWindow.webContents.on('did-finish-load', () => { loadRetries = 0; });
-  mainWindow.webContents.on('did-fail-load', (_e, code, _desc, _url, isMain) => {
-    if (isMain && code !== -3) {
-      const delay = Math.min(3000 * 2 ** loadRetries++, 60000);
-      setTimeout(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.loadURL(WHATSAPP_URL), delay);
+    brandWindow(child);
+    if (details.url === 'about:blank') {
+      child.setAlwaysOnTop(true, 'floating');
+      const remember = debounce(() => {
+        if (child.isDestroyed() || child.isMaximized() || child.isFullScreen() || child.isMinimized()) return;
+        store.set('callBounds', child.getBounds());
+      }, 400);
+      child.on('resize', remember);
+      child.on('move', remember);
     }
   });
+
+  // Offline at launch (or a DNS blip): say so, instead of leaving an empty window, and reconnect
+  // by itself. A quiet probe (not a page load) decides when WhatsApp is reachable again, so the
+  // message does not flicker on every attempt.
+  let loadRetries = 0, probeTimer = null, offline = false;
+  const probe = () => {
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(async () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      let reachable = false;
+      try { reachable = (await net.fetch(WHATSAPP_URL, { method: 'HEAD' })).status < 500; } catch (e) { /* still offline */ }
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (reachable) { offline = false; mainWindow.loadURL(WHATSAPP_URL); } else probe();
+    }, Math.min(3000 * 1.6 ** loadRetries++, 30000));
+  };
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!offline) loadRetries = 0;
+    if (offline) {
+      const css = themeCss();
+      if (css) mainWindow.webContents.insertCSS(css).catch(() => {});
+      mainWindow.webContents.executeJavaScript(
+        "(() => { const m = document.getElementById('mark'); if (m) m.style.backgroundImage = 'url(' + " + JSON.stringify(ICON_URI) + " + ')'; })()").catch(() => {});
+    }
+  });
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, _url, isMain) => {
+    if (!isMain || code === -3) return;                // -3: a navigation that was replaced by another
+    offline = true;
+    mainWindow.loadFile(path.join(__dirname, 'offline.html'), { query: { c: String(desc || code) } });
+    probe();
+  });
+  mainWindow.on('closed', () => clearTimeout(probeTimer));
 
   mainWindow.webContents.on('context-menu', (_e, params) =>
     showContextMenu(ses, params));
@@ -451,9 +645,14 @@ function createWindow() {
     }
   }, 400);
 
+  // At most one message per 120 ms while a window edge is being dragged; the last one always goes out.
+  let refreshTimer = null;
   function triggerLayoutRefresh() {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.webContents.send('window-resized');
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('window-resized');
+    }, 120);
   }
 
   mainWindow.on('resize', () => {
@@ -502,53 +701,115 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('unresponsive', async () => {
+    if (process.env.RELAY_TEST) return;
+    const { response } = await showBox(mainWindow, {
+      type: 'warning', message: 'Relay is not responding.', buttons: ['Wait', 'Restart the page'], defaultId: 0, cancelId: 0
+    });
+    if (response === 1 && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.forcefullyCrashRenderer();   // render-process-gone reloads it
+  });
+  mainWindow.on('focus', applyDnd);
+  mainWindow.on('blur', applyDnd);
+  mainWindow.webContents.on('did-finish-load', applyDnd);
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace && callActive) endCallState(); });
+  mainWindow.webContents.on('render-process-gone', () => endCallState());
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-/** Ask which screen or window to share, then hand it to getDisplayMedia. */
+/**
+ * Ask which screen or window to share (src/picker.html), then hand it to
+ * getDisplayMedia. Relay's own windows are not offered, and while a whole screen
+ * is shared they are excluded from the capture, so the call never mirrors itself.
+ */
 async function pickDisplaySource(request, callback) {
   if (!isWhatsAppWebUrl(request.securityOrigin) || !mainWindow) return callback({});
   let sources;
   try {
     sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
-      thumbnailSize: { width: 64, height: 36 },
-      fetchWindowIcons: false
+      thumbnailSize: { width: 320, height: 180 },
+      fetchWindowIcons: true
     });
   } catch (err) {
     console.error('Screen share: could not list sources', err);
     return callback({});
   }
-  // Sharing Relay itself just shows a mirror of the call.
-  sources = sources.filter((s) => s.id !== mainWindow.getMediaSourceId());
+  const own = new Set(BrowserWindow.getAllWindows().map((w) => w.getMediaSourceId()));
+  sources = sources.filter((s) => !own.has(s.id));
   if (!sources.length) return callback({});
+  const byId = new Map(sources.map((s) => [s.id, s]));
+
+  // The window that asked (the call may be in the pop-out). A modal picker over a hidden or
+  // minimised window would be invisible, so then it stands on its own.
+  const askedBy = request.frame && webContents.fromFrame(request.frame);
+  const parent = (askedBy && BrowserWindow.fromWebContents(askedBy)) || mainWindow;
+  const attach = Boolean(parent) && parent.isVisible() && !parent.isMinimized();
+  const win = new BrowserWindow({
+    width: 800, height: 580, minWidth: 560, minHeight: 420,
+    parent: attach ? parent : undefined, modal: attach, minimizable: false, maximizable: false,
+    show: !process.env.RELAY_TEST,              // (automated tests drive it without showing it)
+    autoHideMenuBar: true, backgroundColor: '#111921', title: 'Share your screen', icon: WINDOW_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, 'picker-preload.js'),
+      sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false
+    }
+  });
+  win.setMenu(null);
+  brandWindow(win);
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (ev) => ev.preventDefault());
 
   let done = false;
-  const finish = (result) => { if (!done) { done = true; callback(result); } };
-  const label = (s) => (s.id.startsWith('screen:') ? 'Screen: ' : 'Window: ') +
-    (s.name.length > 60 ? s.name.slice(0, 57) + '...' : s.name);
+  const finish = (result) => {
+    if (done) return;
+    done = true;
+    ipcMain.removeListener('picker:done', onDone);
+    if (!win.isDestroyed()) win.close();
+    callback(result);
+  };
+  const onDone = (ev, choice) => {
+    if (ev.sender !== win.webContents) return;
+    const s = choice && byId.get(choice.id);
+    if (!s) return finish({});
+    const isScreen = s.id.startsWith('screen:');
+    if (isScreen) holdShareProtection();
+    // System audio can only be captured along with a whole screen.
+    finish({ video: s, ...(isScreen && choice.audio && request.audioRequested ? { audio: 'loopback' } : {}) });
+  };
+  ipcMain.on('picker:done', onDone);
+  win.on('closed', () => finish({}));
 
-  Menu.buildFromTemplate([
-    { label: 'Share your screen or a window', enabled: false },
-    { type: 'separator' },
-    ...sources.map((s) => ({
-      label: label(s),
-      icon: s.thumbnail.isEmpty() ? undefined : s.thumbnail,
-      click: () => finish({
-        video: s,
-        // System audio can only be captured along with a whole screen.
-        ...(request.audioRequested && s.id.startsWith('screen:') ? { audio: 'loopback' } : {})
-      })
-    })),
-    { type: 'separator' },
-    { label: 'Cancel', click: () => finish({}) }
-  ]).popup({
-    window: mainWindow,
-    // The item's click handler may run just after the menu closes.
-    callback: () => setTimeout(() => finish({}), 250)
+  win.webContents.once('did-finish-load', () => {
+    const css = themeCss();
+    if (css) win.webContents.insertCSS(css).catch(() => {});
+    win.webContents.send('picker:data', {
+      audio: Boolean(request.audioRequested),
+      sources: sources.map((s) => ({
+        id: s.id,
+        kind: s.id.startsWith('screen:') ? 'screen' : 'window',
+        name: s.name,
+        thumb: s.thumbnail.isEmpty() ? '' : s.thumbnail.toDataURL(),
+        icon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.resize({ width: 16, height: 16 }).toDataURL() : ''
+      }))
+    });
   });
+  win.loadFile(path.join(__dirname, 'picker.html'));
 }
 
+// While a whole screen is shared, Relay's windows are left out of the capture
+// (Windows: WDA_EXCLUDEFROMCAPTURE). Released when the share ends.
+let shareProtect = { on: false, since: 0, seen: false };
+function setShareProtection(on) {
+  shareProtect.on = on;
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setContentProtection(on);
+}
+function holdShareProtection() {
+  const mine = shareProtect = { on: true, since: Date.now(), seen: false };
+  setShareProtection(true);
+  // If WhatsApp never reports a running share (it was refused, or the call ended
+  // first), do not leave the windows hidden from screenshots.
+  setTimeout(() => { if (shareProtect === mine && !mine.seen) setShareProtection(false); }, 12000);
+}
 async function trimRendererMemory() {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isVisible()) return;
   const dbg = mainWindow.webContents.debugger;
@@ -666,7 +927,8 @@ function mediaPrefs() {
   return {
     video: store.get('enhanceCamera'),
     audio: store.get('enhanceMic'),
-    autoRecord: store.get('autoRecord')
+    autoRecord: store.get('autoRecord'),
+    noise: store.get('noiseSuppression')
   };
 }
 
@@ -698,7 +960,7 @@ function toggle(label, key, restart, after) {
       if (after) after();
       refreshTrayMenu();
       if (restart) {
-        dialog.showMessageBox({
+        showBox({
           type: 'info',
           buttons: ['Restart now', 'Later'],
           defaultId: 0,
@@ -725,22 +987,23 @@ function refreshTrayMenu() {
     {
       label: 'Start with Windows',
       type: 'checkbox',
-      checked: app.getLoginItemSettings().openAtLogin,
-      click: (i) => app.setLoginItemSettings({ openAtLogin: i.checked })
+      checked: app.getLoginItemSettings(loginItem(false)).openAtLogin,
+      click: (i) => app.setLoginItemSettings(loginItem(i.checked))
     },
     { type: 'separator' },
     toggle('Hardware acceleration', 'hardwareAcceleration', true),
     toggle('Low power when hidden', 'lowPower', true),
     toggle('Block telemetry', 'blockTelemetry', true),
+    toggle('Do not disturb', 'dnd', false, applyDnd),
     toggle('Enhance camera in calls', 'enhanceCamera', false, pushMediaPrefs),
     toggle('Enhance microphone in calls', 'enhanceMic', false, pushMediaPrefs),
+    toggle('Noise suppression in calls', 'noiseSuppression', false, pushMediaPrefs),
     toggle('Record calls automatically', 'autoRecord', false, onAutoRecordToggled),
     { label: 'Open recordings folder', click: openRecordingsDir },
     { label: 'Recordings folder...', click: chooseRecordingsDir },
     toggle('Enable calling', 'webCalling', true),
     toggle('Start call engine on demand (saves RAM)', 'lazyCallEngine', true),
-    toggle('Low memory mode', 'lowMemory', true),
-      toggle('Privacy Blur', 'privacyBlur', true),
+    toggle('Privacy Blur', 'privacyBlur', true),
     { label: 'Resource usage…', click: showResourceUsage },
     { type: 'separator' },
     { label: 'Reset sidebar width', click: resetPaneWidth },
@@ -750,6 +1013,7 @@ function refreshTrayMenu() {
     { label: 'About Relay', click: showAbout },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
   ]));
+  if (hub) hub.push();
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +1030,7 @@ function showAbout() {
   }
   const html = fs.readFileSync(path.join(__dirname, 'about.html'), 'utf8')
     .replaceAll('{{ICON}}', ICON_URI)
+    .replaceAll('{{FONT}}', FONT_B64)
     .replaceAll('{{VERSION}}', app.getVersion())
     .replaceAll('{{ELECTRON}}', process.versions.electron)
     .replaceAll('{{CHROMIUM}}', process.versions.chrome)
@@ -776,11 +1041,11 @@ function showAbout() {
     height: 760,
     minWidth: 420,
     minHeight: 360,
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    parent: visibleOwner(mainWindow),
     autoHideMenuBar: true,
     backgroundColor: '#0e1621',
     title: 'About Relay',
-    icon: asset('icon.png'),
+    icon: WINDOW_ICON,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
@@ -790,6 +1055,7 @@ function showAbout() {
     }
   });
   aboutWindow.setMenu(null);
+  brandWindow(aboutWindow);
   aboutWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   aboutWindow.webContents.setWindowOpenHandler(({ url }) => {
     openExternalSafe(url);
@@ -803,7 +1069,7 @@ function showAbout() {
 }
 
 async function resetSession() {
-  const { response } = await dialog.showMessageBox({
+  const { response } = await showBox({
     type: 'warning',
     buttons: ['Cancel', 'Reset'],
     defaultId: 0,
@@ -827,7 +1093,7 @@ function showResourceUsage() {
     .map((m) => `${m.type.padEnd(12)} ${(m.memory.workingSetSize / 1024)
       .toFixed(0).padStart(5)} MB   ${m.cpu.percentCPUUsage.toFixed(1)}% CPU`);
 
-  dialog.showMessageBox({
+  showBox({
     type: 'info',
     title: 'Resource usage',
     message: `${metrics.length} processes · ${(total / 1024).toFixed(0)} MB total`,
@@ -907,17 +1173,37 @@ const handle = (channel, fn) => ipcMain.handle(channel, (e, ...a) => {
   return fn(e, ...a);
 });
 
-on('unread-count', (_e, count) => {
+on('unread-count', async (_e, count) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const n = Math.max(0, Math.floor(Number(count) || 0));
-  mainWindow.setOverlayIcon(n > 0 ? badgeIcon(n) : null, n > 0 ? n + ' unread' : '');
+  const icon = n > 0 ? await badgeIcon(n) : null;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setOverlayIcon(icon, n > 0 ? n + ' unread' : '');
   if (tray) tray.setToolTip(n > 0 ? 'Relay — ' + n + ' unread' : 'Relay');
 });
+
+// The page's theme palette, kept so Relay's own small windows (screen picker, key prompt) match it.
+let themePalette = null;
+on('theme-palette', (_e, p) => {
+  if (!p || typeof p !== 'object') return;
+  const hex = /^#[0-9a-f]{6}$/i;
+  const clean = {};
+  for (const k of ['accent', 'soft', 'strong', 'onAccent', 'r0', 'r1', 'r2', 'r3']) if (hex.test(p[k])) clean[k] = p[k];
+  if (/^\d+, \d+, \d+$/.test(p.rgb)) clean.rgb = p.rgb;
+  themePalette = clean;
+});
+/** CSS that gives one of Relay's own windows the current theme colours. */
+function themeCss() {
+  const p = themePalette;
+  if (!p || !p.accent) return '';
+  return ':root{--relay-accent:' + p.accent + ';--relay-accent-rgb:' + p.rgb + ';--relay-accent-soft:' + p.soft +
+    ';--relay-accent-strong:' + p.strong + ';--relay-on-accent:' + (p.onAccent || '#ffffff') + ';--relay-0:' + p.r0 + ';--relay-1:' + p.r1 + ';--relay-2:' + p.r2 + ';--relay-3:' + p.r3 + '}';
+}
 
 on('activate-window', () => showWindow());
 
 on('flash-window', () => {
-  if (mainWindow && !mainWindow.isFocused()) {
+  if (mainWindow && !mainWindow.isFocused() && !store.get('dnd')) {
     mainWindow.flashFrame(true);
   }
 });
@@ -935,14 +1221,15 @@ const openRecordings = new Map();   // id -> { out: WriteStream, file }
 let recordingSeq = 0;
 
 function recordingsDir() {
-  return store.get('recordingsDir') || path.join(app.getPath('videos'), 'WA');
+  const chosen = store.get('recordingsDir');
+  return (typeof chosen === 'string' && chosen) || path.join(app.getPath('videos'), 'WA');
 }
 
 /** One-time notice: recording laws differ and some need everyone's consent. */
 async function confirmRecording(auto) {
   if (store.get('recordingConsentAck')) return true;
   if (auto) return false;            // automatic recording only after an explicit yes
-  const { response, checkboxChecked } = await dialog.showMessageBox(mainWindow, {
+  const { response, checkboxChecked } = await showBox(mainWindow, {
     type: 'warning',
     title: 'Record calls',
     message: 'Recording a call may need everyone\'s permission.',
@@ -969,17 +1256,22 @@ handle('recording:open', async (_e, opts) => {
     const p2 = (n) => String(n).padStart(2, '0');
     const stamp = now.getFullYear() + '-' + p2(now.getMonth() + 1) + '-' + p2(now.getDate()) + ' ' +
       p2(now.getHours()) + '-' + p2(now.getMinutes()) + '-' + p2(now.getSeconds());
-    const file = path.join(dir, (opts && opts.video ? 'Video call ' : 'Voice call ') + stamp + '.' + ext);
+    const base = path.join(dir, (opts && opts.video ? 'Video call ' : 'Voice call ') + stamp);
+    let file = base + '.' + ext;
+    for (let n = 2; fs.existsSync(file) && n < 100; n++) file = base + ' (' + n + ').' + ext;   // never overwrite or lose a second recording
     const id = ++recordingSeq;
     const out = fs.createWriteStream(file, { flags: 'wx' });
     out.on('error', (err) => {
       console.error('Recording write failed:', err.message);
-      openRecordings.delete(id);
+      if (openRecordings.delete(id)) {
+        toast('Call recording stopped', 'Could not write to the recordings folder (' + err.code + ').');
+      }
     });
     openRecordings.set(id, { out, file });
     return { ok: true, id };
   } catch (err) {
     console.error('Could not start recording:', err.message);
+    toast('Recording could not start', 'The recordings folder is not writable (' + (err.code || 'error') + '). Pick another in the tray menu.');
     return { ok: false };
   }
 });
@@ -995,10 +1287,10 @@ function finishRecording(id) {
   openRecordings.delete(id);
   return new Promise((resolve) => r.out.end(() => {
     try {
-      const n = new Notification({ title: 'Call recording saved', body: path.basename(r.file), silent: true });
-      n.on('click', () => shell.showItemInFolder(r.file));
-      n.show();
-    } catch (e) { /* notifications unavailable */ }
+      // A recording that never got any data (the call ended at once) is not worth keeping.
+      if (fs.statSync(r.file).size === 0) { fs.unlinkSync(r.file); return resolve(); }
+    } catch (e) { /* fall through to the notice */ }
+    toast('Call recording saved', path.basename(r.file), () => shell.showItemInFolder(r.file));
     resolve();
   }));
 }
@@ -1021,11 +1313,12 @@ app.on('before-quit', (e) => {
 });
 
 function chooseRecordingsDir() {
-  dialog.showOpenDialog(mainWindow, {
+  const options = {
     title: 'Where should call recordings be saved?',
     defaultPath: recordingsDir(),
     properties: ['openDirectory', 'createDirectory']
-  }).then(({ canceled, filePaths }) => {
+  };
+  (visibleOwner(mainWindow) ? dialog.showOpenDialog(mainWindow, options) : dialog.showOpenDialog(options)).then(({ canceled, filePaths }) => {
     if (!canceled && filePaths[0]) store.set('recordingsDir', filePaths[0]);
   });
 }
@@ -1037,9 +1330,26 @@ function openRecordingsDir() {
 
 // Keep the screen awake while a call window is open.
 let callBlocker = null;
+let callActive = false;
+/** The call window is gone (it ended, or the page reloaded or crashed under it): let the screen sleep again. */
+function endCallState() {
+  callActive = false;
+  if (callBlocker !== null) { powerSaveBlocker.stop(callBlocker); callBlocker = null; }
+  if (shareProtect.on) setShareProtection(false);
+  applyDnd();
+}
 on('call-state', (_e, active) => {
+  callActive = Boolean(active);
+  applyDnd();
+  if (!active && shareProtect.on) setShareProtection(false);
   if (active && callBlocker === null) callBlocker = powerSaveBlocker.start('prevent-display-sleep');
   else if (!active && callBlocker !== null) { powerSaveBlocker.stop(callBlocker); callBlocker = null; }
+});
+
+on('share-state', (_e, sharing) => {
+  if (!shareProtect.on) return;
+  if (sharing) shareProtect.seen = true;
+  else if (shareProtect.seen || Date.now() - shareProtect.since > 10000) setShareProtection(false);
 });
 
 // Read synchronously by the preload before WhatsApp boots (see enableWebCalling).
@@ -1047,44 +1357,170 @@ ipcMain.on('features:get', (e) => {
   const ok = fromWhatsApp(e);
   e.returnValue = {
     calling: ok && Boolean(store.get('webCalling')),
-    lazyEngine: ok && Boolean(store.get('lazyCallEngine'))
+    lazyEngine: ok && Boolean(store.get('lazyCallEngine')),
+    icon: ok ? ICON_URI : ''
   };
+});
+
+// ---------------------------------------------------------------------------
+// Relay panel (src/hub.js, page side src/page/*.js)
+// ---------------------------------------------------------------------------
+// The title typeface (Newsreader, SIL OFL; src/assets/fonts), loaded into the page by the preload.
+let FONT_B64 = '';
+try { FONT_B64 = fs.readFileSync(path.join(__dirname, 'assets', 'fonts', 'newsreader-500.woff2')).toString('base64'); } catch (e) { /* the title falls back to Georgia */ }
+ipcMain.on('font:get', (e) => { e.returnValue = fromWhatsApp(e) ? FONT_B64 : ''; });
+
+// Page-side modules, delivered to the preload as one string and run in the page.
+const PAGE_MODULES = ['core', 'translate', 'hub', 'calls', 'scroll'];
+ipcMain.on('page:src', (e) => {
+  e.returnValue = fromWhatsApp(e)
+    ? PAGE_MODULES.map((n) => fs.readFileSync(path.join(__dirname, 'page', n + '.js'), 'utf8')).join('\n;\n')
+    : '';
+});
+
+/**
+ * Do not disturb: toasts are dropped in the page (src/preload.js), the taskbar no
+ * longer flashes, and Relay's sound is muted while the window is in the background
+ * and no call is running. Unread counts and the badge still update.
+ */
+function applyDnd() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const quiet = Boolean(store.get('dnd')) && !callActive && !mainWindow.isFocused();
+  mainWindow.webContents.setAudioMuted(quiet);
+  if (tray) tray.setToolTip(store.get('dnd') ? 'Relay - do not disturb' : 'Relay');
+}
+
+/** A small window for the API key: it is typed here, never into WhatsApp's page. */
+function promptForKey(provider) {
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 440, height: 262, resizable: false, minimizable: false, maximizable: false,
+      parent: visibleOwner(mainWindow), modal: Boolean(visibleOwner(mainWindow)),
+      show: !process.env.RELAY_TEST,
+      autoHideMenuBar: true, backgroundColor: '#111921', title: 'Relay', icon: WINDOW_ICON,
+      webPreferences: {
+        preload: path.join(__dirname, 'prompt-preload.js'),
+        sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false
+      }
+    });
+    win.setMenu(null);
+    brandWindow(win);
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    win.webContents.on('will-navigate', (ev) => ev.preventDefault());
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      ipcMain.removeListener('prompt:done', onDone);
+      if (!win.isDestroyed()) win.close();
+      resolve(value);
+    };
+    const onDone = (ev, value) => { if (ev.sender === win.webContents) finish(String(value || '')); };
+    ipcMain.on('prompt:done', onDone);
+    win.on('closed', () => finish(''));
+    win.webContents.once('did-finish-load', () => {
+      const css = themeCss();
+      if (css) win.webContents.insertCSS(css).catch(() => {});
+    });
+    win.loadFile(path.join(__dirname, 'prompt.html'), { query: { p: String(provider || '') } });
+  });
+}
+
+hub = setupHub({
+  store, safeStorage, net, handle,
+  send: (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+  },
+  showBox: (opts) => showBox(mainWindow, opts),
+  promptKey: promptForKey,
+  afterChange: (name) => {
+    if (name === 'dnd') applyDnd();
+    if (name === 'autoRecord') onAutoRecordToggled();
+    else if (name === 'camera' || name === 'mic' || name === 'noise') pushMediaPrefs();
+    refreshTrayMenu();
+  }
+});
+
+// RNNoise: the worklet source and the WebAssembly build (SIMD where the CPU has it).
+let rnnoiseAssets = null;
+handle('relay:rnnoise', () => {
+  if (!rnnoiseAssets) {
+    const dir = path.join(__dirname, 'vendor', 'rnnoise');
+    // The same feature probe the library uses: a tiny module that needs SIMD.
+    const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+    rnnoiseAssets = {
+      worklet: fs.readFileSync(path.join(dir, 'worklet.js'), 'utf8'),
+      wasm: fs.readFileSync(path.join(dir, simd ? 'rnnoise_simd.wasm' : 'rnnoise.wasm'))
+    };
+  }
+  return rnnoiseAssets;
+});
+
+handle('relay:action', (_e, name) => {
+  if (name === 'open-recordings') return openRecordingsDir();
+  if (name === 'choose-recordings') return chooseRecordingsDir();
+  if (name === 'about') return showAbout();
+  if (name === 'get-openrouter-key') return openExternalSafe('https://openrouter.ai/keys');
+  throw new Error('Unknown action');
 });
 handle('system:accent-color', () => getSystemAccent());
 on('pane-width:set', (_e, px) => store.set('paneWidth', Math.max(0, Math.min(4000, Number(px) || 0))));
 
-function badgeIcon(n) {
+// The taskbar badge. Windows cannot make an image from SVG (it comes out empty), so the digit is
+// drawn on a canvas in the page and handed back as a PNG. One image per count and colour is kept.
+const badgeCache = new Map();
+async function badgeIcon(n) {
   const text = n > 99 ? '99+' : String(n);
-  const size = text.length > 2 ? 13 : 17;
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">' +
-    '<circle cx="16" cy="16" r="16" fill="#25D366"/>' +
-    '<text x="16" y="22" font-family="Segoe UI,sans-serif" font-size="' + size +
-    '" font-weight="600" fill="#0b141a" text-anchor="middle">' + text + '</text></svg>';
-  return nativeImage.createFromDataURL(
-    'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64')
-  );
+  const fill = (themePalette && themePalette.strong) || '#5288c1';             // the theme colour
+  const key = text + fill;
+  if (badgeCache.has(key)) return badgeCache.get(key);
+  try {
+    const size = text.length > 2 ? 15 : 20;
+    const url = await mainWindow.webContents.executeJavaScript(`(() => {
+      const c = document.createElement('canvas'); c.width = c.height = 32;
+      const x = c.getContext('2d');
+      x.fillStyle = ${JSON.stringify(fill)}; x.beginPath(); x.arc(16, 16, 16, 0, Math.PI * 2); x.fill();
+      x.fillStyle = '#ffffff'; x.font = '700 ${size}px "Segoe UI", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(${JSON.stringify(text)}, 16, 17);
+      return c.toDataURL('image/png'); })()`);
+    const img = nativeImage.createFromDataURL(url);
+    if (process.env.RELAY_TEST) console.log('[badge]', text, img.isEmpty() ? 'EMPTY' : 'ok ' + img.getSize().width + 'x' + img.getSize().height);
+    if (img.isEmpty()) return null;
+    if (badgeCache.size > 120) badgeCache.clear();
+    badgeCache.set(key, img);
+    return img;
+  } catch (err) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
 app.whenReady().then(() => {
+  if (!gotLock) return;                 // another Relay owns this profile; this copy is on its way out
   createWindow();
-  createTray();
+  if (!process.env.RELAY_TEST) {
+    createTray();
+  } else {
+    // Tests never put an icon in the user's tray, but still build the tray menu so a broken item shows up.
+    tray = { setContextMenu: (menu) => console.log('[tray] menu built,', menu.items.length, 'items'), setToolTip() {}, on() {}, destroy() {} };
+    refreshTrayMenu();
+  }
   createMenu();
   
   if (process.platform === 'win32') {
     app.setUserTasks([
       {
         program: process.execPath,
-        arguments: '--profile=Work',
-        iconPath: process.execPath,
+        arguments: (app.isPackaged ? '' : '"' + app.getAppPath() + '" ') + '--profile=Work',
+        iconPath: app.isPackaged ? process.execPath : asset('icon.ico'),
         iconIndex: 0,
         title: 'Relay - Work',
         description: 'Open Work Account'
       },
       {
         program: process.execPath,
-        arguments: '--profile=Personal',
-        iconPath: process.execPath,
+        arguments: (app.isPackaged ? '' : '"' + app.getAppPath() + '" ') + '--profile=Personal',
+        iconPath: app.isPackaged ? process.execPath : asset('icon.ico'),
         iconIndex: 0,
         title: 'Relay - Personal',
         description: 'Open Personal Account'
@@ -1109,7 +1545,7 @@ app.whenReady().then(() => {
     } catch {}
   }
 
-  globalShortcut.register('CommandOrControl+Shift+W', toggleWindow);
+  if (!process.env.RELAY_TEST) globalShortcut.register('CommandOrControl+Shift+W', toggleWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

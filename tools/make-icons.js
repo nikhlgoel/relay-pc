@@ -15,49 +15,77 @@ const fs = require('fs');
 const path = require('path');
 
 const OUT = path.join(__dirname, '..', 'src', 'assets');
-const SIZES = [16, 24, 32, 48, 64, 128, 256];
+const SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
 
-// Runs in the page: a rounded square in the app's blue with a bold white "R".
+// Runs in the page. A midnight-blue squircle with a soft glow of the accent colour,
+// and a thin geometric R. The leg of the R fades out - a signal being passed on.
+// Below 40px the strokes thicken and the fade is dropped so it still reads.
 const DRAW = `(size) => {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const x = c.getContext('2d');
   const s = size;
+  const small = s <= 40;
 
-  const r = s * 0.225;
+  // Tile
+  const pad = s * 0.035, w = s - pad * 2, r = w * 0.235;
   x.beginPath();
-  x.moveTo(r, 0); x.lineTo(s - r, 0); x.quadraticCurveTo(s, 0, s, r);
-  x.lineTo(s, s - r); x.quadraticCurveTo(s, s, s - r, s);
-  x.lineTo(r, s); x.quadraticCurveTo(0, s, 0, s - r);
-  x.lineTo(0, r); x.quadraticCurveTo(0, 0, r, 0);
-  x.closePath();
-  const g = x.createLinearGradient(0, 0, s, s);
-  g.addColorStop(0, '#6aaee8');
-  g.addColorStop(1, '#2b5278');
-  x.fillStyle = g;
+  x.roundRect(pad, pad, w, w, r);
+  const base = x.createLinearGradient(0, pad, 0, s - pad);
+  base.addColorStop(0, '#17334f');
+  base.addColorStop(1, '#0a1521');
+  x.fillStyle = base;
   x.fill();
+  x.save();
+  x.clip();
+  const glow = x.createRadialGradient(s * 0.30, s * 0.18, 0, s * 0.30, s * 0.18, s * 0.80);
+  glow.addColorStop(0, 'rgba(98, 164, 235, 0.55)');
+  glow.addColorStop(0.45, 'rgba(70, 126, 190, 0.20)');
+  glow.addColorStop(1, 'rgba(60, 110, 170, 0)');
+  x.fillStyle = glow;
+  x.fillRect(0, 0, s, s);
+  x.restore();
+  // hairline highlight on the upper edge
+  if (!small) {
+    x.beginPath();
+    x.roundRect(pad + 0.5, pad + 0.5, w - 1, w - 1, r);
+    const edge = x.createLinearGradient(0, pad, 0, s * 0.6);
+    edge.addColorStop(0, 'rgba(255,255,255,0.22)');
+    edge.addColorStop(1, 'rgba(255,255,255,0)');
+    x.strokeStyle = edge;
+    x.lineWidth = Math.max(1, s * 0.006);
+    x.stroke();
+  }
 
-  // The "R": stem, bowl and leg.
-  const lw = s * 0.115;
-  x.strokeStyle = '#ffffff';
-  x.fillStyle = '#ffffff';
+  // The R. Coordinates are fractions of the canvas.
+  const lw = s * (small ? 0.125 : 0.088);
   x.lineWidth = lw;
   x.lineCap = 'round';
   x.lineJoin = 'round';
+  const X = (v) => v * s, Y = (v) => v * s;
+  const stemX = 0.34, top = 0.265, bowlBottom = 0.505, foot = 0.735;
+  const rad = (bowlBottom - top) / 2;
 
-  const left = s * 0.31, top = s * 0.25, mid = s * 0.50, bottom = s * 0.75;
+  const ink = x.createLinearGradient(0, Y(top), 0, Y(foot));
+  ink.addColorStop(0, '#ffffff');
+  ink.addColorStop(1, '#cfe3f8');
+  x.strokeStyle = ink;
   x.beginPath();
-  x.moveTo(left, bottom);
-  x.lineTo(left, top);
-  x.lineTo(s * 0.52, top);
-  x.bezierCurveTo(s * 0.70, top, s * 0.70, mid, s * 0.52, mid);
-  x.lineTo(left, mid);
+  x.moveTo(X(stemX), Y(foot));
+  x.lineTo(X(stemX), Y(top));
+  x.lineTo(X(0.475), Y(top));
+  x.arc(X(0.475), Y(top + rad), Y(rad), -Math.PI / 2, Math.PI / 2);
+  x.lineTo(X(stemX), Y(bowlBottom));
   x.stroke();
 
-  // Leg
+  // Leg: a gentle curve that thins into the background.
+  const leg = x.createLinearGradient(X(0.475), Y(bowlBottom), X(0.66), Y(foot));
+  leg.addColorStop(0, 'rgb(230,241,251)');
+  leg.addColorStop(1, small ? 'rgba(255,255,255,0.95)' : 'rgba(207,227,248,0.28)');
+  x.strokeStyle = leg;
   x.beginPath();
-  x.moveTo(s * 0.50, mid);
-  x.lineTo(s * 0.70, bottom);
+  x.moveTo(X(0.47), Y(bowlBottom));
+  x.quadraticCurveTo(X(0.56), Y(0.60), X(0.66), Y(foot));
   x.stroke();
 
   return c.toDataURL('image/png').split(',')[1];

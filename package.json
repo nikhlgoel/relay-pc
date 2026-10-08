@@ -8,7 +8,9 @@
   "author": "nikhlgoel",
   "license": "MIT",
   "scripts": {
+    "prestart": "node tools/brand-electron.js",
     "start": "electron .",
+    "prestart:debug": "node tools/brand-electron.js",
     "start:debug": "electron . --remote-debugging-port=9222",
     "test": "node --test \"test/*.test.js\"",
     "icons": "electron tools/make-icons.js",
@@ -62,12 +64,23 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Relay"
+      "shortcutName": "Relay",
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico",
+      "uninstallDisplayName": "Relay"
     },
     "portable": {
       "artifactName": "Relay-portable-${version}.exe"
     },
-    "copyright": "Copyright (c) 2026 nikhlgoel"
+    "copyright": "Copyright (c) 2026 nikhlgoel",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }
   },
   "overrides": {
     "@electron/get": "^5.1.0"

@@ -71,7 +71,7 @@
   bottom: 0;
   left: 5px;
   width: 2px;
-  background: #5288c1;
+  background: var(--relay-accent, #5288c1);
   opacity: 0;
   transition: opacity .12s ease-out;
 }
@@ -106,102 +106,135 @@ button, a, input, textarea, select, label, summary,
    gap disappears when a side panel opens beside the conversation. */
 header[data-wa-under-controls] { padding-right: 140px !important; }
 
-/* --- Rail and header accents ------------------------------------------- */
-[data-wa-pane="rail"] {
-  position: relative !important;
-  z-index: 2 !important;
-  isolation: isolate !important;
-  contain: paint !important;
-  box-sizing: border-box !important;
-  min-width: 60px !important;
-  background: linear-gradient(
-    180deg,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.72) 0px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.45) 35px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.20) 75px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.06) 120px,
-    rgba(24, 26, 28, 0.85) 170px,
-    rgba(18, 20, 22, 0.94) 100%
-  ) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
-}
-[data-wa-pane="rail"] > div,
-[data-wa-pane="rail"] nav {
-  background: transparent !important;
-}
-[data-wa-pane="rail"] [role="button"],
-[data-wa-pane="rail"] button {
-  border-radius: 8px !important;
-  transition: background-color 0.15s ease !important;
-}
-[data-wa-pane="rail"] [role="button"]:hover,
-[data-wa-pane="rail"] button:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
-[data-wa-pane="rail"] [aria-selected="true"],
-[data-wa-pane="rail"] [aria-pressed="true"],
-[data-wa-pane="rail"] [data-navbar-item-selected="true"] {
-  background-color: rgba(var(--wa-accent-rgb, 191, 86, 17), 0.32) !important;
-  box-shadow: inset 0 0 0 1px rgba(var(--wa-accent-rgb, 191, 86, 17), 0.50) !important;
+/* --- Palette ---------------------------------------------------------------
+   WhatsApp's dark theme is built from --WDS-* tokens. Setting them here (each
+   with its -RGB twin, which WhatsApp uses inside rgba()) recolours every
+   surface at once, so panes cannot drift apart.
+   Depth, back to front:  chat 0d1319 < list 111921 < raised 172029 < lifted 1e2935
+   The brand colour is one blue; WhatsApp's green scale is remapped onto it. */
+:root:not([data-relay-light]) {
+  --WDS-systems-chat-background-wallpaper: var(--relay-0, #0d1319) !important;
+  --WDS-systems-chat-background-wallpaper-RGB: 13, 19, 25 !important;
+  --WDS-systems-chat-surface-tray: var(--relay-0, #0d1319) !important;
+  --WDS-systems-chat-surface-tray-RGB: 13, 19, 25 !important;
+  --WDS-surface-default: var(--relay-1, #111921) !important;
+  --WDS-surface-default-RGB: 17, 25, 33 !important;
+  --WDS-background-wash-plain: var(--relay-1, #111921) !important;
+  --WDS-background-wash-plain-RGB: 17, 25, 33 !important;
+  --WDS-background-wash-inset: var(--relay-1, #111921) !important;
+  --WDS-background-wash-inset-RGB: 17, 25, 33 !important;
+  --WDS-components-surface-nav-bar: var(--relay-1, #111921) !important;
+  --WDS-components-surface-nav-bar-RGB: 17, 25, 33 !important;
+  --WDS-surface-elevated-default: var(--relay-2, #172029) !important;
+  --WDS-surface-elevated-default-RGB: 23, 32, 41 !important;
+  --WDS-surface-emphasized: var(--relay-2, #172029) !important;
+  --WDS-surface-emphasized-RGB: 23, 32, 41 !important;
+  --WDS-background-elevated-wash-plain: var(--relay-2, #172029) !important;
+  --WDS-background-elevated-wash-plain-RGB: 23, 32, 41 !important;
+  --WDS-background-elevated-wash-inset: var(--relay-2, #172029) !important;
+  --WDS-background-elevated-wash-inset-RGB: 23, 32, 41 !important;
+  --WDS-surface-elevated-emphasized: var(--relay-3, #1e2935) !important;
+  --WDS-surface-elevated-emphasized-RGB: 30, 41, 53 !important;
+  --WDS-systems-chat-surface-composer: var(--relay-3, #1e2935) !important;
+  --WDS-systems-chat-surface-composer-RGB: 30, 41, 53 !important;
+  --WDS-systems-bubble-surface-incoming: var(--relay-3, #1c2733) !important;
+  --WDS-systems-bubble-surface-incoming-RGB: 28, 39, 51 !important;
+  --WDS-systems-bubble-surface-outgoing: var(--relay-accent-mid, #2b5278) !important;
+  --WDS-systems-bubble-surface-outgoing-RGB: 43, 82, 120 !important;
+  --WDS-systems-bubble-surface-system: var(--relay-2, #172029) !important;
+  --WDS-systems-bubble-surface-system-RGB: 23, 32, 41 !important;
+  --WDS-systems-bubble-surface-e2e: var(--relay-2, #172029) !important;
+  --WDS-systems-bubble-surface-e2e-RGB: 23, 32, 41 !important;
+  --WDS-systems-bubble-surface-business: var(--relay-2, #172029) !important;
+  --WDS-systems-bubble-surface-business-RGB: 23, 32, 41 !important;
+  --app-background: var(--relay-1, #111921) !important;
+  --navbar-background: var(--relay-1, #111921) !important;
+  --splashscreen-startup-background: var(--relay-0, #0d1319) !important;
+  --splashscreen-startup-background-plain: var(--relay-0, #0d1319) !important;
+  --splashscreen-startup-background-rgb: 13, 19, 25 !important;
+
+  /* green -> blue */
+  --WDS-green-100: var(--relay-accent-pale, #dbe9fb) !important;
+  --WDS-green-200: var(--relay-accent-pale, #b3d1f5) !important;
+  --WDS-green-300: var(--relay-accent-soft, #86b3ea) !important;
+  --WDS-green-400: var(--relay-accent-strong, #639ad9) !important;
+  --WDS-green-450: var(--relay-accent, #5288c1) !important;
+  --WDS-green-500: #4677a9 !important;
+  --WDS-green-600: #3a6389 !important;
+  --WDS-green-700: #2e4d6c !important;
+  --WDS-green-750: var(--relay-accent-mid, #2b5278) !important;
+  --WDS-green-800: var(--relay-accent-deep, #1f3a56) !important;
+  --WDS-accent: var(--relay-accent, #5288c1) !important;
+  --WDS-accent-deemphasized: var(--relay-accent-deep, #1f3a56) !important;
+  --WDS-accent-emphasized: var(--relay-accent-pale, #dbe9fb) !important;
+  --WDS-content-action-emphasized: var(--relay-accent-soft, #6aa3dc) !important;
+  --WDS-content-external-link: var(--relay-accent-soft, #6aa3dc) !important;
+  --WDS-components-filter-surface-selected: var(--relay-accent-deep, #1f3a56) !important;
+  --WDS-components-filter-surface-selected-RGB: 31, 58, 86 !important;
+  --WDS-persistent-always-branded: var(--relay-accent, #5288c1) !important;
+  --WDS-persistent-activity-indicator: var(--relay-accent-strong, #639ad9) !important;
+  --WDS-secondary-positive: var(--relay-accent-soft, #86b3ea) !important;
+  --WDS-secondary-positive-deemphasized: var(--relay-accent-deep, #1f3a56) !important;
+  --WDS-green-400: var(--relay-accent-strong, #639ad9) !important;
+  --icon-primary: var(--relay-accent, #5288c1) !important;
+  --badge-pending: var(--relay-accent, #5288c1) !important;
+  --green-deep: var(--relay-accent, #5288c1) !important;
+  --status-ring-unread: var(--relay-accent-strong, #639ad9) !important;
+  --ptt-green: var(--relay-accent-strong, #639ad9) !important;
 }
 
-/* Soft accent glow along the top edge of the whole window. */
+/* --- The one accent fade -----------------------------------------------------
+   A single soft glow of the Windows accent colour across the top of the window,
+   drawn once over everything. The panes themselves carry no gradient, so there
+   is no seam where one ends and the next begins. The stops follow an ease-out
+   curve so the fade has no visible steps. */
 #app::before {
   content: '';
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 38px;
+  height: 96px;
   background: linear-gradient(
     180deg,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.40) 0px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.15) 16px,
-    transparent 100%
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.34) 0px,
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.27) 12px,
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.19) 28px,
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.12) 46px,
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.06) 66px,
+    rgba(var(--relay-accent-rgb, 82, 136, 193), 0.02) 84px,
+    transparent 96px
   );
   pointer-events: none;
   z-index: 9999;
 }
-
-[data-wa-pane="side"] header,
-#main > header {
-  background: linear-gradient(
-    180deg,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.45) 0px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.20) 30px,
-    rgba(var(--wa-accent-rgb, 191, 86, 17), 0.05) 60px,
-    rgba(17, 27, 33, 0.96) 90px,
-    var(--wa-surface, #111b21) 100%
-  ) !important;
+[data-wa-pane="rail"] {
+  position: relative !important;
+  box-sizing: border-box !important;
+  min-width: 60px !important;
+  background: var(--WDS-surface-default) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.04) !important;
 }
+[data-wa-pane="rail"] > div,
+[data-wa-pane="rail"] nav,
 [data-wa-pane="side"] header > div,
 #main > header > div { background: transparent !important; }
-
-/* --- Telegram-style dark theme ------------------------------------------ */
-:root {
-  --background-default: #0e1621 !important;
-  --background-default-hover: #202b36 !important;
-  --background-default-active: #2b5278 !important;
-  --panel-header-background: #17212b !important;
-  --panel-background: #17212b !important;
-  --panel-background-hover: #202b36 !important;
-  --panel-background-active: #2b5278 !important;
-
-  --message-in: #182533 !important;
-  --message-out: #2b5278 !important;
-  --outgoing-background: #2b5278 !important;
-  --incoming-background: #182533 !important;
-
-  --compose-input-background: #17212b !important;
-  --compose-primary: #ffffff !important;
-  --compose-panel-background: #0e1621 !important;
-
-  --teal: #5288c1 !important;
-  --teal-light: #5288c1 !important;
-  --primary: #5288c1 !important;
-  --primary-strong: #5288c1 !important;
-
-  --system-message-background: rgba(23, 33, 43, 0.6) !important;
-  --system-message-text: #8e9bb0 !important;
+/* Headers sit on the surface of the column they head, so the list and its title
+   bar read as one piece. */
+[data-wa-pane="side"] header { background: var(--WDS-surface-default) !important; }
+#main > header { background: var(--WDS-surface-elevated-default) !important; }
+[data-wa-pane="rail"] [role="button"],
+[data-wa-pane="rail"] button {
+  border-radius: 10px !important;
+  transition: background-color 0.15s ease !important;
+}
+[data-wa-pane="rail"] [role="button"]:hover,
+[data-wa-pane="rail"] button:hover { background-color: rgba(255, 255, 255, 0.07) !important; }
+[data-wa-pane="rail"] [aria-selected="true"],
+[data-wa-pane="rail"] [aria-pressed="true"],
+[data-wa-pane="rail"] [data-navbar-item-selected="true"] {
+  background-color: rgba(var(--relay-accent-rgb, 82, 136, 193), 0.26) !important;
+  box-shadow: none !important;
 }
 
 [data-testid="msg-container"] {
@@ -209,7 +242,10 @@ header[data-wa-under-controls] { padding-right: 140px !important; }
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15) !important;
 }
 
-[data-asset-chat-background-dark] { display: none !important; }
+/* The stock doodle wallpaper is hidden; a wallpaper you chose yourself is kept. */
+[data-testid="conversation-background-default_chat_wallpaper"] { display: none !important; }
+/* (the chat theme sets its own wallpaper colour on this element, so the palette value is written out) */
+html:not([data-relay-light]) #main { background: var(--relay-0, #0d1319) !important; }
 
 /* WhatsApp already draws the rounded pill around the whole compose row (attach,
    emoji, input, mic). Giving the input its own background, border and radius
@@ -229,26 +265,19 @@ footer > div,
 [data-testid="filter-list"] {
   padding-top: 10px !important;
   padding-bottom: 10px !important;
-  background: #17212b !important;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.2) !important;
+  background: transparent !important;
+  border-bottom: none !important;
 }
 [data-testid="filter-list"] button {
-  border-radius: 8px !important;
-  background: rgba(255, 255, 255, 0.05) !important;
+  border-radius: 999px !important;
   font-weight: 500 !important;
 }
-[data-testid="filter-list"] button[aria-pressed="true"] {
-  background: #2b5278 !important;
-  color: #fff !important;
+
+html:not([data-relay-light]) [data-wa-pane="side"] [role="row"]:has([aria-selected="true"]) {
+  background: var(--relay-accent-deep, #1f3a56) !important;
+  box-shadow: inset 3px 0 0 var(--relay-accent, #5288c1) !important;
 }
 
-[data-wa-pane="side"] [role="row"]:has([aria-selected="true"]) {
-  box-shadow: 0 0 15px rgba(82, 136, 193, 0.15) inset !important;
-  border-left: 3px solid #5288c1 !important;
-  background: #2b5278 !important;
-}
-
-[data-testid="chat-list"] button[title="New chat"] { background-color: #5288c1 !important; }
 
 ::-webkit-scrollbar { width: 4px !important; height: 4px !important; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1) !important; border-radius: 4px !important; }
@@ -272,23 +301,280 @@ footer > div,
 }
 [data-relay-brand="wordmark"]::after {
   content: "Relay";
-  font: 700 22px/28px "Segoe UI", system-ui, sans-serif;
-  letter-spacing: .2px;
-  color: #1fa855;                        /* login screen is light */
+  font: 500 25px/30px "Relay Serif", Georgia, "Times New Roman", serif;
+  letter-spacing: .3px;
+  color: var(--relay-accent-mid, #2b5278);            /* login screen is light */
 }
-[data-wa-pane] [data-relay-brand="wordmark"]::after { color: #e9edef; }
+[data-wa-pane] [data-relay-brand="wordmark"]::after { color: #eef2f7; }
+[data-relay-brand="square"] {
+  display: inline-block !important;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: url("__RELAY_ICON__") center / contain no-repeat;
+}
+[data-relay-brand="qr"] {
+  /* WhatsApp places its 64px mark by its top-left corner, so a smaller one has to be
+     moved in by half the difference (margin) to stay centred. 46px icon + 4px ring
+     = 54px across: the QR still decodes with a 66px block removed from its centre
+     (tested), so this leaves a wide margin for dim screens and cheap phone cameras. */
+  display: inline-block !important;
+  box-sizing: content-box !important;
+  width: 46px !important;
+  height: 46px !important;
+  padding: 4px !important;
+  margin: 5px !important;
+  border-radius: 13px;
+  background: url("__RELAY_ICON__") 0 0 / 46px 46px no-repeat content-box content-box, #fff;
+}
 
-/* --- Privacy blur (tray toggle) ----------------------------------------- */
-body.privacy-blur-active .message-in,
-body.privacy-blur-active .message-out,
-body.privacy-blur-active [data-testid="chat-list"] img,
-body.privacy-blur-active [data-testid="chat-list"] [dir="ltr"] {
+/* The loading screen: Relay's icon and name, on the theme's own background. */
+html:not([data-relay-light]), html:not([data-relay-light]) body { background: var(--relay-0, #0d1319); }
+#wa_web_initial_startup { background: transparent !important; }
+#wa_web_initial_startup > div:first-child span {
+  display: inline-block;
+  background: url("__RELAY_ICON__") 0 center / 52px 52px no-repeat;   /* WhatsApp's own mark sits at the left of its 250px box */
+}
+#wa_web_initial_startup > div:first-child svg { visibility: hidden; }
+#wa_web_initial_startup > div:first-child::after { display: none !important; }   /* the grey shimmer block */
+#wa_web_initial_startup > div:nth-child(2) { position: relative; color: transparent !important; }
+#wa_web_initial_startup > div:nth-child(2)::after {
+  content: "Relay";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #eef2f7;
+  font: 500 30px/1.2 "Relay Serif", Georgia, "Times New Roman", serif;
+  letter-spacing: .3px;
+}
+
+/* Clickable parts of a header (back arrows, icons) must not be drag handles. */
+[data-wa-nodrag] { -webkit-app-region: no-drag !important; }
+
+/* --- Relay panel -----------------------------------------------------------
+   Everything Relay adds to the page (src/page/*.js): the rail button and its
+   panel, the translate button and the translated line, the toast. Same
+   surfaces, radii and accent as the rest of the theme, with one soft fade of
+   the accent colour at the top of each card. */
+.relay-mark {
+  display: inline-block;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  background: url("__RELAY_ICON__") center / contain no-repeat;
+}
+
+.relay-rail-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color .15s ease;
+}
+.relay-rail-btn .relay-mark { width: 24px; height: 24px; opacity: .88; transition: opacity .15s ease, transform .2s ease; }
+.relay-rail-btn:hover { background: rgba(255, 255, 255, .07); }
+.relay-rail-btn:hover .relay-mark { opacity: 1; }
+.relay-rail-btn[aria-expanded="true"] { background: rgba(var(--relay-accent-rgb, 82, 136, 193), .26); }
+.relay-rail-btn[aria-expanded="true"] .relay-mark { opacity: 1; transform: scale(1.06); }
+.relay-rail-btn[data-dot="1"]::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e5a74b;
+  box-shadow: 0 0 0 2px var(--relay-1, #111921);
+}
+
+.relay-panel {
+  position: fixed;
+  z-index: 10000;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background:
+    radial-gradient(120% 70px at 0% 0%, rgba(var(--relay-accent-rgb, 82, 136, 193), .22), transparent 100%),
+    var(--relay-2, #172029);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .3);
+  color: #e6edf3;
+  font: 13.5px/1.35 "Segoe UI", system-ui, sans-serif;
+  -webkit-app-region: no-drag;
+  animation: relay-pop .16s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes relay-pop { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+
+.relay-head { display: flex; align-items: center; gap: 12px; padding: 14px 14px 10px 16px; }
+.relay-head .relay-mark { width: 32px; height: 32px; }
+.relay-head > div:not(.relay-x) { flex: 1; min-width: 0; }
+.relay-title { font: 500 21px/1.1 "Relay Serif", Georgia, serif; letter-spacing: .3px; }
+.relay-sub { font-size: 12px; color: #8fa1b3; }
+.relay-x, .relay-link, .relay-seg-b, .relay-qr-t, .relay-qr-x, .relay-add-b, .relay-tr-btn {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.relay-x { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #8fa1b3; }
+.relay-x:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+
+.relay-body { overflow-y: auto; padding: 0 14px 6px 16px; }
+.relay-sec { padding: 6px 0 10px; }
+.relay-sec h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: #6f8398;
+}
+.relay-sec h3::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255, 255, 255, .10), transparent); }
+
+.relay-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+.relay-row-ic { width: 28px; height: 28px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: rgba(var(--relay-accent-rgb, 82, 136, 193), .14); color: var(--relay-accent-soft, #86b3ea); }
+.relay-row-tx { flex: 1; min-width: 0; }
+.relay-row-t { font-weight: 500; }
+.relay-row-s { font-size: 12px; color: #8fa1b3; }
+
+.relay-sw { position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0; border-radius: 999px; background: rgba(255, 255, 255, .16); cursor: pointer; transition: background-color .18s ease; }
+.relay-sw-knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); transition: transform .18s cubic-bezier(.3, .7, .3, 1); }
+.relay-sw[aria-checked="true"] { background: var(--relay-accent, #5288c1); }
+.relay-sw[aria-checked="true"] .relay-sw-knob { transform: translateX(16px); }
+.relay-sw:focus-visible, .relay-seg-b:focus-visible, .relay-link:focus-visible { outline: 2px solid var(--relay-accent-soft, #86b3ea); outline-offset: 2px; }
+
+.relay-seg { display: flex; gap: 4px; margin: 4px 0 2px 40px; padding: 3px; width: fit-content; border-radius: 999px; background: rgba(255, 255, 255, .06); }
+.relay-seg-b { padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: #8fa1b3; transition: background-color .15s ease, color .15s ease; }
+.relay-seg-b[aria-pressed="true"] { background: var(--relay-accent, #5288c1); color: var(--relay-on-accent, #fff); }
+.relay-seg-b:not([aria-pressed="true"]):hover { color: #fff; }
+
+.relay-note { margin: 4px 0 2px 40px; font-size: 12px; color: #9fb0c1; }
+.relay-note-dim { color: #6f8398; }
+.relay-note-a { display: flex; gap: 14px; margin-top: 4px; }
+.relay-link { display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 12.5px; font-weight: 500; color: var(--relay-accent-soft, #86b3ea); }
+.relay-link:hover { color: var(--relay-accent-pale, #b3d1f5); }
+
+.relay-qr { display: flex; align-items: stretch; gap: 4px; margin: 4px 0; border-radius: 10px; background: rgba(255, 255, 255, .045); transition: background-color .15s ease; }
+.relay-qr:hover { background: rgba(255, 255, 255, .085); }
+.relay-qr-t { flex: 1; min-width: 0; padding: 8px 4px 8px 12px; text-align: left; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.relay-qr-x { width: 30px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 10px; color: #6f8398; opacity: 0; transition: opacity .15s ease; }
+.relay-qr:hover .relay-qr-x, .relay-qr-x:focus-visible { opacity: 1; }
+.relay-qr-x:hover { color: #fff; }
+.relay-add { display: flex; gap: 6px; margin-top: 8px; }
+.relay-input { flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; outline: none; background: var(--relay-3, #1e2935); color: inherit; font: inherit; }
+.relay-input::placeholder { color: #6f8398; }
+.relay-input:focus { border-color: var(--relay-accent, #5288c1); }
+.relay-add-b { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: var(--relay-accent, #5288c1); color: var(--relay-on-accent, #fff); transition: background-color .15s ease; }
+.relay-add-b:hover { background: var(--relay-accent-strong, #639ad9); }
+
+.relay-foot { display: flex; gap: 18px; padding: 8px 16px 12px; border-top: 1px solid rgba(255, 255, 255, .06); }
+
+#relay-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 10001;
+  max-width: 420px;
+  padding: 9px 18px;
+  border-radius: 999px;
+  background: var(--relay-3, #1e2935);
+  border: 1px solid rgba(255, 255, 255, .08);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  color: #e6edf3;
+  font: 13px/1.3 "Segoe UI", system-ui, sans-serif;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+#relay-toast[data-show="1"] { opacity: 1; transform: translate(-50%, 0); }
+
+/* Quick replies: the button in the message box and its pop-up. */
+.relay-qr-btn { width: 40px; height: 40px; flex: none; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: transparent; color: rgba(255, 255, 255, .62); cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+.relay-qr-btn:hover, .relay-qr-btn[aria-expanded="true"] { background: rgba(255, 255, 255, .08); color: var(--relay-accent-soft, #9cc3ea); }
+.relay-qrp { width: 300px; max-height: 360px; }
+.relay-qrp-h { padding: 12px 16px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: #6f8398; }
+.relay-qrp-b { overflow-y: auto; padding: 0 8px 4px; }
+.relay-qrp-i { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; width: 100%; margin: 2px 0; padding: 8px 10px; border: 0; border-radius: 10px; background: transparent; color: #e6edf3; font: inherit; text-align: left; white-space: pre-wrap; cursor: pointer; transition: background-color .12s ease; }
+.relay-qrp-i:hover { background: rgba(255, 255, 255, .08); }
+.relay-qrp-m { margin: 2px 16px 12px; }
+.relay-qrp .relay-note { margin-left: 8px; }
+
+/* Translate button in the chat header, and the translated line under a message. */
+.relay-tr-btn { width: 40px; height: 40px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: rgba(255, 255, 255, .62); transition: background-color .15s ease, color .15s ease; }
+.relay-tr-btn:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+.relay-tr-btn[aria-pressed="true"] { background: rgba(var(--relay-accent-rgb, 82, 136, 193), .24); color: var(--relay-accent-soft, #9cc3ea); }
+
+.relay-tr {
+  display: block;
+  margin-top: 5px;
+  padding-top: 5px;
+  padding-right: 4px;
+  border-top: 1px solid rgba(255, 255, 255, .09);
+  font-size: .93em;
+  line-height: 1.38;
+  color: var(--relay-accent-pale, #a9cdf1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  direction: ltr;
+  text-align: left;
+  animation: relay-fade .3s ease both;
+}
+.relay-tr::before {
+  content: attr(data-lang);
+  margin-right: 7px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .09);
+  color: #9fb4c9;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+@keyframes relay-fade { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+/* Room for the time stamp that WhatsApp draws over the end of the last line. */
+.relay-tr::after { content: ""; display: inline-block; width: 52px; }
+html[data-relay-tr="off"] .relay-tr { display: none; }
+
+/* --- Privacy blur (tray toggle) -----------------------------------------
+   Names, previews, pictures and messages are blurred until the pointer is over them. */
+body.privacy-blur-active #pane-side [role="row"] img,
+body.privacy-blur-active #pane-side [role="row"] [dir="auto"],
+body.privacy-blur-active #pane-side [role="row"] [dir="ltr"],
+body.privacy-blur-active #main header img,
+body.privacy-blur-active #main header [data-testid="conversation-info-header-chat-title-name"],
+body.privacy-blur-active [data-testid="conversation-panel-messages"] [data-testid="msg-container"] {
   filter: blur(5px);
   transition: filter 0.3s ease;
 }
-body.privacy-blur-active .message-in:hover,
-body.privacy-blur-active .message-out:hover,
-body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover img,
-body.privacy-blur-active [data-testid="chat-list"] [role="row"]:hover [dir="ltr"] {
+body.privacy-blur-active #pane-side [role="row"]:hover img,
+body.privacy-blur-active #pane-side [role="row"]:hover [dir="auto"],
+body.privacy-blur-active #pane-side [role="row"]:hover [dir="ltr"],
+body.privacy-blur-active #main header:hover img,
+body.privacy-blur-active #main header:hover [data-testid="conversation-info-header-chat-title-name"],
+body.privacy-blur-active [data-testid="conversation-panel-messages"] [data-testid="msg-container"]:hover {
   filter: blur(0);
+}
+
+/* People who ask the system for less motion get none: the panel appears, text fades in, nothing glides. */
+@media (prefers-reduced-motion: reduce) {
+  .relay-panel, .relay-tr, #relay-toast, .relay-sw, .relay-sw-knob, .relay-rail-btn .relay-mark { animation: none !important; transition: none !important; }
 }

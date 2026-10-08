@@ -63,7 +63,7 @@ function hookNotifications() {
   // Deliberately NOT hooked: serviceWorker 'message'. The worker posts messages
   // for reasons other than notification clicks, and each one would have pulled
   // the window to the front.
-  const pageWorld = () => {
+  const pageWorld = (relayIcon) => {
     if (window.__waNotificationHook) return;
     window.__waNotificationHook = true;
 
@@ -81,7 +81,13 @@ function hookNotifications() {
     const NativeNotification = window.Notification;
     if (NativeNotification) {
       function AppNotification(title, options) {
-        const n = new NativeNotification(title, options);
+        if (window.__relayDnd) {              // do not disturb: swallow the toast
+          const quiet = new EventTarget();
+          quiet.close = () => {};
+          return quiet;
+        }
+        // A toast without an image would show a generic icon; give it Relay's.
+        const n = new NativeNotification(title, relayIcon && !(options && options.icon) ? { ...options, icon: relayIcon } : options);
         window.dispatchEvent(new CustomEvent('wa-new-notification'));
         n.addEventListener('click', notifyActivation);
         return n;
@@ -95,7 +101,7 @@ function hookNotifications() {
   };
 
   try {
-    webFrame.executeJavaScript(`(${pageWorld.toString()})();`);
+    webFrame.executeJavaScript(`(${pageWorld.toString()})(${JSON.stringify(relayIconUri)});`);
   } catch (err) {
     console.warn('[Notifications] hook injection failed:', err);
   }
@@ -172,11 +178,10 @@ function applyBranding(root) {
   if (!root.querySelectorAll) return;
   for (const title of root.querySelectorAll('svg > title')) {
     const name = title.textContent;
-    if (name !== 'wa-wordmark' && name !== 'wa-logo') continue;
+    const kind = { 'wa-logo': 'logo', 'wa-wordmark': 'wordmark', 'wa-square-icon': 'square', 'WhatsApp logo': 'qr' }[name];
+    if (!kind) continue;
     const host = title.parentElement.parentElement;
-    if (host && !host.dataset.relayBrand) {
-      host.dataset.relayBrand = name === 'wa-logo' ? 'logo' : 'wordmark';
-    }
+    if (host && !host.dataset.relayBrand) host.dataset.relayBrand = kind;
   }
 }
 
@@ -370,13 +375,225 @@ function createDragStrip() {
   document.body.insertBefore(strip, document.body.firstChild);
 }
 
+// ---------------------------------------------------------------------------
+// Theme colour. Relay's whole palette (the glow, accents, switches, surfaces) is
+// built from one colour: the one you picked as your chat theme in WhatsApp (read
+// from the outgoing-bubble colour of the open chat), else the Windows accent
+// colour, else blue. Everything is set as CSS variables on <html>, so it changes
+// the moment the theme does. theme.css only ever refers to the variables.
+// ---------------------------------------------------------------------------
+const THEME_KEY = 'relay.themeBase';
+const FALLBACK_BASE = '#5288c1';
+let systemAccentHex = null;
+let appliedBase = '';
+
+function hexToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  const l = (mx + mn) / 2;
+  let h = 0, s = 0;
+  if (d) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  return [h, s * 100, l * 100];
+}
+
+function hslToRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return [f(0), f(8), f(4)];
+}
+
+const rgbHex = ([r, g, b]) => '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+
+/** Any CSS colour string -> '#rrggbb' (or null). */
+function toHex(css) {
+  const probe = document.createElement('span');
+  probe.style.color = css;
+  if (!probe.style.color) return null;
+  document.documentElement.append(probe);
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(probe).color);
+  probe.remove();
+  return m ? rgbHex([+m[1], +m[2], +m[3]]) : null;
+}
+
+/** Every variable the theme uses, derived from one base colour. */
+/** WCAG relative luminance and contrast ratio, for keeping text readable on any theme colour. */
+function relLuminance([r, g, b]) {
+  const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function contrastRatio(a, b) {
+  const [hi, lo] = [relLuminance(a), relLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function buildPalette(baseHex) {
+  let [h, s] = hexToHsl(baseHex);
+  s = Math.max(40, Math.min(72, s));
+  const tone = (l, sat = s) => hslToRgb(h, sat, l);
+  const surf = (l) => hslToRgb(h, Math.min(30, s * 0.62), l);
+  const p = {};
+  const set = (name, rgb) => { p[name] = rgbHex(rgb); p[name + '-RGB'] = rgb.join(', '); };
+
+  // Deep blues and violets are dark even at mid lightness; lift the accent until it stands out
+  // from the list background (4:1), and pick black or white text, whichever reads better on it.
+  const base1 = surf(9);
+  let lift = 56;
+  while (lift < 76 && contrastRatio(tone(lift), base1) < 4) lift += 2;
+  const accent = tone(lift), soft = tone(Math.min(92, lift + 16)), strong = tone(Math.min(88, lift + 7));
+  const deep = tone(23, s * 0.9), mid = tone(30, s * 0.85), pale = tone(88);
+  const onAccent = contrastRatio([255, 255, 255], accent) >= contrastRatio([11, 20, 26], accent) ? [255, 255, 255] : [11, 20, 26];
+  p['--relay-on-accent'] = rgbHex(onAccent);
+  p['--relay-accent'] = rgbHex(accent);
+  p['--relay-accent-rgb'] = accent.join(', ');
+  p['--relay-accent-soft'] = rgbHex(soft);
+  p['--relay-accent-strong'] = rgbHex(strong);
+  p['--relay-accent-deep'] = rgbHex(deep);
+  p['--relay-accent-mid'] = rgbHex(mid);
+  p['--relay-accent-pale'] = rgbHex(pale);
+
+  const r0 = surf(5.5), r1 = surf(9), r2 = surf(12.5), r3 = surf(16);
+  [['0', r0], ['1', r1], ['2', r2], ['3', r3]].forEach(([k, v]) => { p['--relay-' + k] = rgbHex(v); p['--relay-' + k + '-rgb'] = v.join(', '); });
+
+  // WhatsApp's own tokens (each has an -RGB twin it uses inside rgba()).
+  const T = (names, rgb) => names.forEach((n) => set(n, rgb));
+  T(['--WDS-systems-chat-background-wallpaper', '--WDS-systems-chat-surface-tray'], r0);
+  T(['--WDS-surface-default', '--WDS-background-wash-plain', '--WDS-background-wash-inset', '--WDS-components-surface-nav-bar'], r1);
+  T(['--WDS-surface-elevated-default', '--WDS-surface-emphasized', '--WDS-background-elevated-wash-plain',
+    '--WDS-background-elevated-wash-inset', '--WDS-systems-bubble-surface-system', '--WDS-systems-bubble-surface-e2e',
+    '--WDS-systems-bubble-surface-business'], r2);
+  T(['--WDS-surface-elevated-emphasized', '--WDS-systems-chat-surface-composer', '--WDS-systems-bubble-surface-incoming'], r3);
+  set('--WDS-systems-bubble-surface-outgoing', mid);
+  set('--WDS-components-filter-surface-selected', deep);
+  for (const n of ['--app-background', '--navbar-background']) p[n] = rgbHex(r1);
+  p['--splashscreen-startup-background'] = p['--splashscreen-startup-background-plain'] = rgbHex(r0);
+  p['--splashscreen-startup-background-rgb'] = r0.join(', ');
+
+  // WhatsApp's green scale, remapped onto the base colour.
+  [['100', 92], ['200', 82], ['300', 72], ['400', 63], ['450', 56], ['500', 48], ['600', 40], ['700', 32], ['750', 30], ['800', 23]]
+    .forEach(([k, l]) => { p['--WDS-green-' + k] = rgbHex(tone(l)); });
+  Object.assign(p, {
+    '--WDS-accent': p['--relay-accent'], '--WDS-accent-deemphasized': p['--relay-accent-deep'],
+    '--WDS-accent-emphasized': p['--relay-accent-pale'], '--WDS-content-action-emphasized': p['--relay-accent-soft'],
+    '--WDS-content-external-link': p['--relay-accent-soft'], '--WDS-persistent-always-branded': p['--relay-accent'],
+    '--WDS-persistent-activity-indicator': p['--relay-accent-strong'], '--WDS-secondary-positive': p['--relay-accent-soft'],
+    '--WDS-secondary-positive-deemphasized': p['--relay-accent-deep'], '--icon-primary': p['--relay-accent'],
+    '--badge-pending': p['--relay-accent'], '--green-deep': p['--relay-accent'], '--status-ring-unread': p['--relay-accent-strong'],
+    '--ptt-green': p['--relay-accent-strong']
+  });
+  return p;
+}
+
+const paletteKeys = new Set();
+
+/** Relay's look is a dark one. If WhatsApp itself is set to its Light theme (dark text), step aside
+ *  instead of putting dark surfaces under dark text. WhatsApp's own text colour tells which it is. */
+function whatsAppIsLight() {
+  const text = getComputedStyle(document.documentElement).getPropertyValue('--WDS-content-default').trim();
+  const hex = text && toHex(text);
+  return Boolean(hex) && relLuminance([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]) < 0.35;
+}
+
+function clearPalette() {
+  for (const k of paletteKeys) document.documentElement.style.removeProperty(k);
+  paletteKeys.clear();
+  appliedBase = '';
+}
+
+function applyTheme(baseHex) {
+  let base = baseHex || FALLBACK_BASE;
+  if (hexToHsl(base)[1] < 14) base = FALLBACK_BASE;       // a grey has no hue to build a palette from
+  if (base === appliedBase) return;
+  appliedBase = base;
+  const palette = buildPalette(base);
+  const root = document.documentElement.style;
+  for (const [k, v] of Object.entries(palette)) { root.setProperty(k, v, 'important'); paletteKeys.add(k); }
+  ipcRenderer.send('theme-palette', {
+    accent: palette['--relay-accent'], rgb: palette['--relay-accent-rgb'], soft: palette['--relay-accent-soft'],
+    strong: palette['--relay-accent-strong'], onAccent: palette['--relay-on-accent'], r0: palette['--relay-0'], r1: palette['--relay-1'], r2: palette['--relay-2'], r3: palette['--relay-3']
+  });
+}
+
+/** The chat-theme colour, if you picked one: the open chat's outgoing-bubble colour. */
+function readChatThemeBase() {
+  const main = document.querySelector('#main');
+  if (!main) return null;
+  const mine = document.documentElement.style.getPropertyValue('--WDS-systems-bubble-surface-outgoing').trim();
+  const v = getComputedStyle(main).getPropertyValue('--WDS-systems-bubble-surface-outgoing').trim();
+  if (!v || v.toLowerCase() === mine.toLowerCase()) return 'none';     // no chat theme chosen
+  const hex = toHex(v);
+  return hex && hexToHsl(hex)[1] >= 18 ? hex : 'none';              // greys carry no colour
+}
+
+let chatThemeBase = null;
+function refreshTheme() {
+  const light = whatsAppIsLight();
+  document.documentElement.toggleAttribute('data-relay-light', light);
+  if (light) { if (paletteKeys.size) clearPalette(); return; }
+  const found = readChatThemeBase();
+  if (found) {
+    const next = found === 'none' ? '' : found;
+    if (next !== chatThemeBase) {
+      chatThemeBase = next;
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* private mode */ }   // remembered for the next start
+    }
+  }
+  applyTheme(chatThemeBase || systemAccentHex || FALLBACK_BASE);
+}
+
+/**
+ * Headers are drag handles for the frameless window, but WhatsApp's clickable bits
+ * (the back arrow in a side panel, for one) are plain <div>s with no role, which
+ * CSS cannot single out - and a drag region swallows clicks. Anything in a header
+ * that shows a pointer cursor is marked no-drag.
+ */
+const headerChecked = new WeakSet();
+function markClickableInHeaders() {
+  for (const el of document.querySelectorAll('header *')) {
+    if (headerChecked.has(el)) continue;
+    headerChecked.add(el);
+    if (el.dataset.waNodrag !== undefined) continue;
+    if (el.childElementCount > 6 || el.tagName === 'svg' || el.tagName === 'path') continue;
+    if (getComputedStyle(el).cursor === 'pointer') el.dataset.waNodrag = '';
+  }
+}
+
+/** The title typeface, as a FontFace built from bytes (no network, so WhatsApp's CSP has no say). */
+function loadTitleFont() {
+  try {
+    const b64 = ipcRenderer.sendSync('font:get');
+    if (!b64) return;
+    webFrame.executeJavaScript(`(() => { try {
+      const bin = atob(${JSON.stringify(b64)}); const u = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+      new FontFace('Relay Serif', u.buffer, { weight: '500' }).load().then((f) => document.fonts.add(f)).catch(() => {});
+    } catch (e) {} })()`);
+  } catch (e) { /* the title falls back to Georgia */ }
+}
+loadTitleFont();
+
 function setAccent(accent) {
   if (!accent) return;
   document.documentElement.style.setProperty('--wa-accent-color', accent.hex);
   document.documentElement.style.setProperty('--wa-accent-rgb', accent.rgb);
+  systemAccentHex = accent.hex;
+  refreshTheme();
 }
 
+// First paint uses the colour remembered from last time, not a flash of blue.
+try {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (/^#[0-9a-f]{6}$/i.test(saved || '')) chatThemeBase = saved;
+} catch (e) { /* storage unavailable */ }
+
 async function setupLayout() {
+  applyTheme(chatThemeBase || systemAccentHex || FALLBACK_BASE);
   createDragStrip();
   createSplitter();
 
@@ -405,6 +622,8 @@ async function setupLayout() {
     reportCallState();                 // also while hidden: the screen-awake lock must be released
     if (document.hidden) return;
     refresh();
+    refreshTheme();
+    markClickableInHeaders();
     installCallFullscreenButton();
     syncSharePreview();
     if (panes && panes.row !== observedRow) {
@@ -416,9 +635,22 @@ async function setupLayout() {
   setInterval(tick, 700);
   tick();
 
-  window.addEventListener('resize', () => { applyWidth(width || initial); refresh(); });
+  // Dragging a window edge fires resize dozens of times a second, from both the page and
+  // the main process; each refresh measures layout. One refresh per frame is plenty.
+  let refreshQueued = false, refreshIdle = 0;
+  const refreshSoon = () => {
+    if (refreshQueued) return;
+    refreshQueued = true;
+    requestAnimationFrame(() => {
+      refreshQueued = false;
+      applyWidth(width || initial);               // cheap: one CSS variable
+      clearTimeout(refreshIdle);
+      refreshIdle = setTimeout(refresh, 90);      // the layout-measuring part waits for the drag to pause
+    });
+  };
+  window.addEventListener('resize', refreshSoon);
   document.addEventListener('fullscreenchange', () => setTimeout(refresh, 100));
-  ipcRenderer.on('window-resized', () => { applyWidth(width || initial); refresh(); });
+  ipcRenderer.on('window-resized', refreshSoon);
 }
 
 // ===========================================================================
@@ -523,11 +755,20 @@ function syncSharePreview() {
 
 let lastCallState = false;
 /** Tell the main process whether a call window is open (keeps the screen awake). */
+let lastShareState = false;
 function reportCallState() {
-  const active = Boolean(document.querySelector('[data-testid="move_resize_component"]'));
+  const call = document.querySelector('[data-testid="move_resize_component"]');
+  const active = Boolean(call);
   if (active !== lastCallState) {
     lastCallState = active;
     ipcRenderer.send('call-state', active);
+  }
+  // Lets the main process take Relay's own windows out of a screen capture only
+  // while a share is actually running.
+  const sharing = Boolean(call && call.querySelector('button[aria-label*="Stop sharing" i]'));
+  if (sharing !== lastShareState) {
+    lastShareState = sharing;
+    ipcRenderer.send('share-state', sharing);
   }
 }
 
@@ -619,6 +860,9 @@ function hookCallRecording() {
         // Relay's own microphone processing also ends in a stream destination.
         if (isOutput && !window.__relayBuildingAudio && !this.__relayOwn) {
           sources.push(new WeakRef(this));
+          if (sources.length > 300) {                      // sound effects connect often; drop the ones already collected
+            for (let i = sources.length - 1; i >= 0; i--) if (!sources[i].deref()) sources.splice(i, 1);
+          }
           tapNode(this);
         }
       } catch (e) { /* never break WhatsApp's audio */ }
@@ -766,10 +1010,19 @@ function hookCallRecording() {
       } else {
         stream = state.audio.dest.stream;
       }
-      const rec = new MediaRecorder(stream, hasVideo
-        ? { mimeType: mime, videoBitsPerSecond: 3000000, audioBitsPerSecond: 128000 }
-        : { mimeType: mime, audioBitsPerSecond: 128000 });
       const id = state.id;
+      let rec;
+      try {
+        rec = new MediaRecorder(stream, hasVideo
+          ? { mimeType: mime, videoBitsPerSecond: 3000000, audioBitsPerSecond: 128000 }
+          : { mimeType: mime, audioBitsPerSecond: 128000 });
+      } catch (err) {                                       // give the file back instead of leaving it open and empty
+        clearInterval(state.frameTimer);
+        stopTap();
+        try { state.audio.ctx.close(); } catch (e) { /* ignore */ }
+        post({ type: 'close', id });
+        return;
+      }
       state.queue = Promise.resolve();
       rec.ondataavailable = (e) => {
         if (!e.data || !e.data.size) return;
@@ -918,8 +1171,24 @@ function hookMediaDevices() {
     const md = navigator.mediaDevices;
     if (!md || !md.getUserMedia) return;
     const origGetUserMedia = md.getUserMedia.bind(md);
-    // Filled in from the tray toggles by the preload; both default to on.
-    const prefs = () => window.__waMedia || { video: true, audio: true };
+    // Filled in from the tray / Relay panel by the main process; all default to on.
+    // The setter lets a running call react the moment noise suppression is toggled.
+    let mediaPrefs = window.__waMedia || { video: true, audio: true, noise: true };
+    const prefs = () => mediaPrefs;
+    const noisePairs = new Set();               // { dry, wet } gains of each running mic chain
+    const wantsNoise = () => mediaPrefs.noise !== false;
+    Object.defineProperty(window, '__waMedia', {
+      configurable: true,
+      get: () => mediaPrefs,
+      set(v) {
+        mediaPrefs = v || mediaPrefs;
+        for (const { dry, wet } of noisePairs) {
+          const t = dry.context.currentTime;
+          wet.gain.setTargetAtTime(wantsNoise() ? 1 : 0, t, 0.04);
+          dry.gain.setTargetAtTime(wantsNoise() ? 0 : 1, t, 0.04);
+        }
+      }
+    });
 
     const enabledDesc = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, 'enabled');
 
@@ -973,14 +1242,54 @@ function hookMediaDevices() {
     let audioCtx = null;
     let chains = 0;
 
-    function enhanceAudioTrack(raw) {
+    // RNNoise (the neural suppressor behind Mozilla/Discord-style "krisp" filters),
+    // run in an AudioWorklet. It expects 48 kHz. The worklet and its WebAssembly come
+    // from the main process (src/vendor/rnnoise); blob: is allowed by WhatsApp's CSP.
+    const ensureCtx = () => {
       if (!audioCtx || audioCtx.state === 'closed') {
-        audioCtx = new AudioContext({ latencyHint: 'interactive' });
+        audioCtx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
       }
-      const ctx = audioCtx;
+      return audioCtx;
+    };
+
+    async function prepareNoise() {
+      const ctx = ensureCtx();
+      if (!wantsNoise() || ctx.__rnn !== undefined) return;
+      ctx.__rnn = null;                           // "tried": do not retry on every chain
+      try {
+        const R = window.__relay;
+        if (!R) return;
+        // A call must never wait on this: after 4 s it starts without noise suppression.
+        const load = (async () => {
+          const a = await R.call('rnnoise');
+          const url = URL.createObjectURL(new Blob([a.worklet], { type: 'text/javascript' }));
+          try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+          return a.wasm.buffer.slice(a.wasm.byteOffset, a.wasm.byteOffset + a.wasm.byteLength);
+        })();
+        ctx.__rnn = await Promise.race([load, new Promise((_, no) => setTimeout(() => no(new Error('timed out')), 4000))]);
+      } catch (e) {
+        console.warn('[Relay] noise suppression unavailable:', e);
+      }
+    }
+
+    function enhanceAudioTrack(raw) {
+      const ctx = ensureCtx();
       if (ctx.state === 'suspended') ctx.resume().catch(() => {});
 
       const src = ctx.createMediaStreamSource(new MediaStream([raw]));
+
+      // Dry and wet paths meet at `head`, so the switch is a quick crossfade.
+      const head = ctx.createGain();
+      const dry = ctx.createGain();
+      const wet = ctx.createGain();
+      let rnn = null;
+      if (ctx.__rnn) {
+        rnn = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/rnnoise', {
+          processorOptions: { maxChannels: 1, wasmBinary: ctx.__rnn }
+        });
+      }
+      dry.gain.value = rnn && wantsNoise() ? 0 : 1;
+      wet.gain.value = rnn && wantsNoise() ? 1 : 0;
 
       const highpass = ctx.createBiquadFilter();
       highpass.type = 'highpass';
@@ -1009,11 +1318,15 @@ function hookMediaDevices() {
       limiter.attack.value = 0.001;
       limiter.release.value = 0.05;
 
+      const pair = { dry, wet };
       const dest = ctx.createMediaStreamDestination();
       // Tell the call recorder this plumbing is Relay's own, not call audio.
       window.__relayBuildingAudio = true;
       try {
-        src.connect(highpass);
+        src.connect(dry);
+        dry.connect(head);
+        if (rnn) { src.connect(rnn); rnn.connect(wet); wet.connect(head); noisePairs.add(pair); }
+        head.connect(highpass);
         highpass.connect(presence);
         presence.connect(compressor);
         compressor.connect(makeup);
@@ -1026,6 +1339,8 @@ function hookMediaDevices() {
       chains++;
       const out = dest.stream.getAudioTracks()[0];
       return mirror(out, raw, () => {
+        noisePairs.delete(pair);
+        if (rnn) { try { rnn.port.postMessage('destroy'); } catch {} rnn.disconnect(); }
         src.disconnect();
         limiter.disconnect();
         // Release the audio device when the last call / recording is over.
@@ -1050,8 +1365,9 @@ function hookMediaDevices() {
     //   4. contrast, saturation, then an unsharp mask on the denoised image
     // Falls back to a plain canvas filter if WebGL2 is unavailable.
 
-    const TARGET_CENTER_LUMA = 0.5;    // where a well exposed face sits (encoded)
-    const MAX_LIFT = 1.65;
+    const TARGET_CENTER_LUMA = 0.42;   // where a well exposed face sits (encoded). Lower than a flat
+    // 'bright' look on purpose: lifting past this washes colour out.
+    const MAX_LIFT = 1.5;
 
     const VERT = '#version 300 es\n' +
       'out vec2 vUv;\n' +
@@ -1083,7 +1399,7 @@ function hookMediaDevices() {
     const FRAG_TONE = '#version 300 es\n' +
       'precision highp float;\n' +
       'uniform sampler2D uT; uniform vec2 uTexel;\n' +
-      'uniform float uLift; uniform float uContrast; uniform float uSat; uniform float uSharp; uniform vec3 uGain;\n' +
+      'uniform float uLift; uniform float uContrast; uniform float uSat; uniform float uVib; uniform float uSharp; uniform vec3 uGain;\n' +
       'in vec2 vUv; out vec4 o;\n' +
       'void main(){\n' +
       '  vec3 c = texture(uT, vUv).rgb;\n' +
@@ -1102,7 +1418,11 @@ function hookMediaDevices() {
       '  vec3 x = mix(g, pow(g, vec3(1.0 / uLift)), amount);\n' +
       '  x = mix(x, x * x * (3.0 - 2.0 * x), uContrast);\n' +
       '  float l = dot(x, vec3(0.2126, 0.7152, 0.0722));\n' +
-      '  x = mix(vec3(l), x, uSat);\n' +
+      // Vibrance: muted colours gain more than ones that are already strong, so skin stays
+      // natural while foliage, sky and clothes get their depth back. A lift thins colour
+      // out, so the more it lifted, the more is given back.
+      '  float mx = max(x.r, max(x.g, x.b)); float s0 = (mx - min(x.r, min(x.g, x.b))) / max(mx, 0.001);\n' +
+      '  x = mix(vec3(l), x, (uSat + 0.22 * (uLift - 1.0)) * (1.0 + uVib * (1.0 - s0)));\n' +
       '  x += detail * uSharp * (0.8 + 0.5 * uLift);\n' +
       '  o = vec4(clamp(x, 0.0, 1.0), 1.0);\n' +
       '}';
@@ -1159,7 +1479,8 @@ function hookMediaDevices() {
         // The first reading applies at once so the picture does not ease in slowly.
         m.lift = m.ready ? m.lift + (wanted - m.lift) * 0.25 : wanted;
         if (n > 64 * 36 * 0.04 && ar > 0 && ab > 0) {
-          const clampG = (v) => Math.min(1.1, Math.max(0.9, v));
+          // Half-strength and narrow: enough to undo a bad cast, not to cool a golden-hour face.
+          const clampG = (v) => 1 + (Math.min(1.08, Math.max(0.93, v)) - 1) * 0.5;
           const target = [clampG(ag / ar), 1, clampG(ag / ab)];
           for (let k = 0; k < 3; k++) m.gain[k] = m.ready ? m.gain[k] + (target[k] - m.gain[k]) * 0.15 : target[k];
         }
@@ -1267,8 +1588,9 @@ function hookMediaDevices() {
           gl.uniform1i(tone.u.uT, 0);
           gl.uniform2f(tone.u.uTexel, 1 / w, 1 / h);
           gl.uniform1f(tone.u.uLift, p.lift);
-          gl.uniform1f(tone.u.uContrast, 0.12);
-          gl.uniform1f(tone.u.uSat, 1.1);
+          gl.uniform1f(tone.u.uContrast, 0.22);
+          gl.uniform1f(tone.u.uSat, 1.05);
+          gl.uniform1f(tone.u.uVib, 0.3);
           gl.uniform1f(tone.u.uSharp, 0.9);
           gl.uniform3f(tone.u.uGain, p.gain[0], p.gain[1], p.gain[2]);
           gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1296,7 +1618,7 @@ function hookMediaDevices() {
             canvas.height = video.videoHeight;
           }
           const b = Math.min(1.7, 1 + (p.lift - 1) * 0.9);
-          ctx.filter = 'brightness(' + b.toFixed(3) + ') contrast(1.08) saturate(1.08)';
+          ctx.filter = 'brightness(' + b.toFixed(3) + ') contrast(1.14) saturate(1.16)';
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           return true;
         }
@@ -1404,6 +1726,7 @@ function hookMediaDevices() {
       }
 
       const stream = await origGetUserMedia(next);
+      if (p.audio && stream.getAudioTracks().length) await prepareNoise();
       if (p.audio) for (const t of stream.getAudioTracks()) swap(stream, t, enhanceAudioTrack);
       // Remember the live microphone so a call recording can mix it in.
       const micTrack = stream.getAudioTracks()[0];
@@ -1492,8 +1815,10 @@ function enableWebCalling(lazyEngine) {
   }
 }
 
+let relayIconUri = '';
 try {
   const features = ipcRenderer.sendSync('features:get');
+  relayIconUri = features.icon || '';
   if (features.calling) enableWebCalling(Boolean(features.lazyEngine));
 } catch (e) {
   console.warn('features:get failed:', e);
@@ -1506,11 +1831,46 @@ ipcRenderer.invoke('media:prefs')
   .then((p) => webFrame.executeJavaScript('window.__waMedia = ' + JSON.stringify({
     video: Boolean(p && p.video),
     audio: Boolean(p && p.audio),
-    autoRecord: Boolean(p && p.autoRecord)
+    autoRecord: Boolean(p && p.autoRecord),
+    noise: !p || p.noise !== false
   })))
   .catch(() => {});
 
 // ===========================================================================
+
+// ===========================================================================
+// Relay panel bridge. The panel, translation and quick replies run in the page
+// (src/page/*.js, delivered by the main process); this is their only way out.
+// Channels are an allow-list, and replies go back by postMessage.
+// ===========================================================================
+const RELAY_CHANNELS = new Set([
+  'state', 'set', 'translate-provider', 'translate-consent', 'key-prompt', 'key-clear',
+  'translate', 'snippets', 'action', 'rnnoise'
+]);
+
+function installRelayPanel() {
+  window.addEventListener('message', async (e) => {
+    const d = e.data;
+    if (e.source !== window || !d || d.__relay !== 'req' || !RELAY_CHANNELS.has(d.ch)) return;
+    let result, error;
+    try {
+      result = await ipcRenderer.invoke('relay:' + d.ch, ...(Array.isArray(d.args) ? d.args : []));
+    } catch (err) {
+      error = String((err && err.message) || err).replace(/^Error invoking remote method '[^']*': (Error: )?/, '');
+    }
+    window.postMessage({ __relay: 'res', id: d.id, result, error }, location.origin);
+  });
+  ipcRenderer.on('relay:state', (_e, st) => {
+    window.postMessage({ __relay: 'evt', ch: 'state', data: st }, location.origin);
+  });
+  try {
+    const src = ipcRenderer.sendSync('page:src');
+    if (src) webFrame.executeJavaScript(src);
+  } catch (err) {
+    console.warn('[Relay] panel failed to load:', err);
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   // Pop-out windows (about:blank, filled in by WhatsApp) need none of this.
   if (location.origin !== 'https://web.whatsapp.com') return;
@@ -1518,4 +1878,5 @@ window.addEventListener('DOMContentLoaded', () => {
   hookNotifications();
   watchForBrowserOnly();
   setupLayout();
+  installRelayPanel();
 });
