@@ -1293,9 +1293,11 @@ handle('clipboard:get-files', () => {
   return new Promise((resolve) => {
     const script = '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);(Get-Clipboard -Format FileDropList).FullName';
     execFile(path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-STA', '-Command', script],
-      { windowsHide: true, timeout: 6000, maxBuffer: 1024 * 1024, encoding: 'utf8' }, async (err, stdout) => {
+      { windowsHide: true, timeout: 25000, maxBuffer: 1024 * 1024, encoding: 'utf8' }, async (err, stdout) => {
         try {
-          if (err || !stdout) return resolve({ files: [], skipped: 0 });
+          // A cold PowerShell right after boot can take many seconds; running out of time must be visible, not a silent no-op.
+          if (err) return resolve({ files: [], skipped: 0, failed: true });
+          if (!stdout) return resolve({ files: [], skipped: 0 });
           const paths = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 30);
           const files = [];
           let total = 0, skipped = 0;

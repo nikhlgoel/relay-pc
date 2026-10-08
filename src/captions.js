@@ -206,7 +206,15 @@ function setupCaptions(ctx) {
   }
 
   /** Starts the engine (once), preferring the discrete GPU. Resolves to the engine record. */
+  // One start at a time: two clips arriving together (voice translation listens to both sides) must not each launch or swap the engine.
+  let ensuring = null;
   async function ensureEngine(modelId) {
+    while (ensuring) await ensuring.catch(() => {});
+    const p = ensuring = startEngineOnce(modelId);
+    try { return await p; } finally { if (ensuring === p) ensuring = null; }
+  }
+
+  async function startEngineOnce(modelId) {
     clearTimeout(idleTimer);
     if (engine && engine.model !== modelId) killEngine();
     if (engine) return engine.readyPromise;

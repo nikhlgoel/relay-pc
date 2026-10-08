@@ -2040,7 +2040,8 @@ function hookClipboardFiles() {
     if (busy) return;
     busy = true;
     try {
-      const { files, skipped } = (await ipcRenderer.invoke('clipboard:get-files')) || {};
+      const { files, skipped, failed } = (await ipcRenderer.invoke('clipboard:get-files')) || {};
+      if (failed) window.postMessage({ __relay: 'evt', ch: 'toast', data: 'Could not read the copied files - try pasting again.' }, location.origin);
       if (skipped) window.postMessage({ __relay: 'evt', ch: 'toast', data: skipped + (skipped === 1 ? ' file is' : ' files are') + ' too large to paste (over 100 MB). Use the attach button.' }, location.origin);
       if (!files || !files.length) return;
       const dt = new DataTransfer();

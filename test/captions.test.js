@@ -243,6 +243,37 @@ test('baseLang trims region and case', () => {
   assert.equal(baseLang(undefined), '');
 });
 
+test('regression: two clips arriving together share one engine start, even when it is swapped to the faster graphics chip', async () => {
+  const { EventEmitter } = require('node:events');
+  const os = require('node:os');
+  const dir = require('node:fs').mkdtempSync(require('node:path').join(os.tmpdir(), 'relay-eng-'));
+  process.env.RELAY_TEST = '1';
+  process.env.RELAY_CAPTION_MODELS = dir;
+  let forks = 0;
+  const utilityProcess = {
+    fork() {
+      forks++;
+      const proc = new EventEmitter();
+      proc.kill = () => {};
+      proc.postMessage = (m) => {
+        if (m.type === 'init') setTimeout(() => proc.emit('message', { type: 'ready', devices: [{ index: 0, name: 'Integrated', discrete: false }, { index: 1, name: 'Discrete', discrete: true }] }), 10);
+      };
+      return proc;
+    }
+  };
+  const noop = () => {};
+  const h = setupCaptions({
+    app: { getPath: () => dir, getLocale: () => 'en-US' }, store: { get: () => undefined, set: noop, delete: noop, has: () => false }, net: {},
+    handle: noop, utilityProcess, showBox: noop, event: noop, pushState: noop, isOnBattery: () => false
+  });
+  const [a, b] = await Promise.all([h._test.ensureEngine('fast'), h._test.ensureEngine('fast')]);
+  assert.equal(a, b, 'both callers get the same engine');
+  assert.equal(a, h._test.getEngine(), 'and it is the one still running');
+  assert.equal(a.gpu, 1);
+  assert.equal(forks, 2, 'one engine on the first chip, then one on the faster chip - not four');
+  h._test.killEngine();
+});
+
 // ---- model download: mirrors ---------------------------------------------------------------------
 function downloaderWith(locale, fetchImpl) {
   const os = require('node:os');
