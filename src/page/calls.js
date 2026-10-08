@@ -1,5 +1,5 @@
 /* Relay panel - keyboard shortcuts during a call (page side).
-   M mute, V camera, S share screen, F full screen, R record. They press the
+   M mute, V camera, S share screen, F full screen, R record, C captions. They press the
    call window's own buttons, so they follow whatever WhatsApp and Relay show,
    and do nothing while you are typing or when no call is open. */
 (() => {
@@ -12,7 +12,8 @@
     v: /^turn camera (on|off)$/i,
     s: /^(share screen|stop sharing screen)$/i,
     f: /^(exit )?full screen$/i,
-    r: /^(record call|stop recording)/i
+    r: /^(record call|stop recording)/i,
+    c: /^(turn (on|off) captions|starting captions)/i
   };
 
   addEventListener('keydown', (e) => {

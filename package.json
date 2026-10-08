@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "repository": "nikhlgoel/whatsapp-pc",
   "description": "Relay - a native Windows desktop client for WhatsApp",
   "productName": "Relay",
@@ -69,7 +69,8 @@
       "uninstallerIcon": "icon.ico",
       "installerHeaderIcon": "icon.ico",
       "uninstallDisplayName": "Relay",
-      "artifactName": "RelayInstaller${version}.${ext}"
+      "artifactName": "RelayInstaller${version}.${ext}",
+      "include": "src/assets/installer.nsh"
     },
     "portable": {
       "artifactName": "Relay-portable-${version}.exe"
@@ -81,9 +82,15 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true
-    }
+    },
+    "asarUnpack": [
+      "node_modules/@fugood/**/*"
+    ]
   },
   "overrides": {
     "@electron/get": "^5.1.0"
+  },
+  "optionalDependencies": {
+    "@fugood/node-whisper-win32-x64-vulkan": "1.2.0-rc.1"
   }
 }

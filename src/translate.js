@@ -95,6 +95,39 @@ async function googleOne(fetchFn, text) {
   return { lang, text: casualize(out, text), translated: true };
 }
 
+// --- live captions ------------------------------------------------------------
+// Whisper and Google do not spell a few language codes the same way.
+const GTX_CODES = { zh: 'zh-CN', he: 'iw', nb: 'no', nn: 'no', yue: 'zh-TW', jw: 'jw' };
+const gtxCode = (c) => { const k = String(c || '').trim().toLowerCase(); return GTX_CODES[k] || k; };
+
+/**
+ * One line of speech -> `target` (any language, via the keyless Google endpoint, which is quick
+ * enough for live captions). `from` is the language Whisper heard; if Google does not know that
+ * code it is asked to detect the language itself. Resolves to { lang, text, translated }.
+ */
+async function translateCaption(text, target, { fetch: fetchFn = fetch, from = '' } = {}) {
+  const tl = gtxCode(target) || 'en';
+  const sources = from ? [gtxCode(from), 'auto'] : ['auto'];
+  try {
+    let json = null;
+    for (const sl of sources) {
+      const body = new URLSearchParams({ client: 'gtx', dt: 't', dj: '1', sl, tl, q: text });
+      const res = await fetchFn(GOOGLE_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: body.toString()
+      });
+      if (res.ok) { json = await res.json(); break; }
+      if (sl === sources[sources.length - 1]) throw new Error('Translation service returned ' + res.status);
+    }
+    const { lang, text: out } = parseGoogle(json);
+    if (!out.trim() || sameText(out, text)) return { lang, text, translated: false };
+    return { lang, text: tl === 'en' ? casualize(out, text) : out, translated: true };
+  } catch (err) {
+    throw friendlyError(err);
+  }
+}
+
 // --- claude -----------------------------------------------------------------
 const CLAUDE_SYSTEM = [
   'You translate chat messages into natural, casual, conversational English - the way a friend would text it.',
@@ -274,5 +307,5 @@ async function translateBatchRaw(texts, { provider = 'google', apiKey = '', fetc
 
 module.exports = {
   worthTranslating, isEnglish, casualize, parseGoogle, buildClaudeRequest, parseClaude,
-  parseReply, rankFreeModels, translateBatch, CLAUDE_MODEL, MAX_TEXT, _router: router
+  parseReply, rankFreeModels, translateBatch, translateCaption, gtxCode, CLAUDE_MODEL, MAX_TEXT, _router: router
 };

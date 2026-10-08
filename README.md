@@ -18,6 +18,10 @@ Unofficial: not affiliated with or endorsed by WhatsApp or Meta.
 - Call quality: neural noise suppression (RNNoise), voice EQ and levelling, and a GPU camera cleanup (face-weighted exposure, shadow lift, colour, denoise, sharpen)
 - **Translate chats**: incoming messages in any language appear under the original in casual, chat-style English. Per chat (button in the chat header) or for all chats. Best with a free OpenRouter key (free models), or your own Claude key; Google Translate works with no key. It asks before any text is sent
 - **Relay panel** (button at the foot of the left rail): translation, do not disturb, call settings and quick replies in one place
+- **Live captions** in calls (`C` or the CC button): the other person's speech is turned into text on your PC (whisper.cpp on your graphics card, nothing recorded or uploaded), the language is detected, and the captions are translated into the language you choose (English by default; English also works offline). Draggable, top or bottom, three sizes, normal and full screen. The speech model downloads once (60 MB, or 190 MB for "Accurate")
+- **Sharper video**: the picture you receive in a call gets a light sharpening at your screen's resolution and a short, steady video buffer (Relay panel > Calls). Your own camera has its own cleanup
+- **Back** from the mouse's side button, `Alt+Left` or the Windows back key: closes a preview, goes up a Settings page, then closes the open chat
+- **For places where WhatsApp needs a VPN or proxy** (mainland China, Russia ...): Relay follows the Windows proxy; Relay panel > Network takes a proxy address; the model download falls back to a mirror (hf-mirror.com); the Relay panel, captions notice and the "can't reach WhatsApp" screen speak Chinese and Russian
 - Screen stays awake during calls; on-demand call engine and idle trimming keep RAM down
 - Multiple accounts, each with its own session
 - Spellcheck, zoom, drag-and-drop and file paste, links open in your browser
@@ -35,7 +39,12 @@ Relay is an independent, unofficial project. It is not affiliated with, authoris
 
 Download the installer or portable build from the
 [Releases](https://github.com/nikhlgoel/whatsapp-pc/releases) page, then scan the QR
-code once. The session is stored on your PC.
+code once. The session is stored on your PC. The installer registers Relay with Windows
+(Start menu and search, Default apps, `Win+R relay`) and is available in English, Chinese and Russian.
+
+**Setup kit** (`npm run dist`, then `tools/build-kit.ps1`): a zip with `Install-Relay.cmd`, which removes the Microsoft Store and older Win32 WhatsApp,
+earlier wrappers (Aura, WaDesk) and installs Relay in one go; optionally with offline speech models for PCs that cannot reach huggingface.co.
+See `tools/setup-kit/README.txt` (English, Chinese, Russian).
 
 ## Build
 
@@ -72,14 +81,21 @@ Settings are in `%APPDATA%\Relay\config.json`.
 ```
 src/main.js      window, tray, permissions, screen share, updates
 src/preload.js   unread badge, notifications, layout, call quality, panel bridge
-src/page/        in-page panel, translation, call keys
-src/hub.js       panel settings, consent, translation requests
+src/page/        in-page panel, translation, call keys, captions, back, sharper video, Chinese/Russian text
+src/hub.js       panel settings, consent, translation requests, proxy and language choice
+src/captions.js  live captions: speech model, engine process, translation (unit tested)
+src/captions-engine.js  whisper.cpp in a utility process
 src/translate.js translation back-ends (unit tested)
 src/theme.css    theme and layout styling
 src/urls.js      URL allow-list (unit tested)
 test/            unit tests
-tools/           icon generator (npm run icons)
+tools/           icon generator (npm run icons), setup kit (setup-kit/, build-kit.ps1)
 ```
+
+## Third-party
+
+Live captions use [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (MIT, via `@fugood/node-whisper-win32-x64-vulkan`) and OpenAI's Whisper models (MIT),
+downloaded on first use and checked against a pinned SHA-256. RNNoise (BSD-3) is bundled in `src/vendor/rnnoise`.
 
 ## License
 

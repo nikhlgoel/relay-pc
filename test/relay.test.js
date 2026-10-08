@@ -20,14 +20,14 @@ test('main.js delivers exactly the page modules that exist, core first', () => {
   const list = /PAGE_MODULES = \[([^\]]+)\]/.exec(read('main.js'));
   assert.ok(list, 'PAGE_MODULES not found');
   const names = [...list[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-  assert.equal(names[0], 'core');
+  assert.deepEqual(names.slice(0, 2), ['i18n', 'core']);       // the translations first, then the shared core
   assert.deepEqual([...names].sort(), pageFiles.map((f) => f.replace(/\.js$/, '')));
 });
 
 test('bridge channels, page calls and main handlers agree', () => {
   const channels = new Set(
     [...(/RELAY_CHANNELS = new Set\(\[([\s\S]*?)\]\)/.exec(read('preload.js'))[1]).matchAll(/'([^']+)'/g)].map((m) => m[1]));
-  const handlers = new Set([...(read('main.js') + read('hub.js')).matchAll(/handle\('relay:([\w-]+)'/g)].map((m) => m[1]));
+  const handlers = new Set([...(read('main.js') + read('hub.js') + read('captions.js')).matchAll(/handle\('relay:([\w-]+)'/g)].map((m) => m[1]));
   for (const c of channels) assert.ok(handlers.has(c), 'no handler for relay:' + c);
   for (const h of handlers) assert.ok(channels.has(h), 'relay:' + h + ' is not reachable from the page');
 
@@ -84,4 +84,46 @@ test('edge: nothing automated may touch the real desktop', () => {
   }
   assert.match(main, /if \(!process\.env\.RELAY_TEST\) globalShortcut/);
   assert.match(main, /process\.env\.RELAY_TEST \|\| !Notification\.isSupported\(\)/);
+});
+
+test('proxy address: accepts host:port forms, rejects anything else', () => {
+  const { cleanProxy } = require('../src/hub');
+  for (const ok of ['127.0.0.1:7890', 'socks5://127.0.0.1:1080', 'http://proxy.example.com:8080', 'HTTPS://p.example:443']) {
+    assert.equal(cleanProxy(ok), ok.trim(), ok);
+  }
+  assert.equal(cleanProxy(''), '');
+  assert.equal(cleanProxy('   '), '');
+  assert.equal(cleanProxy(undefined), '');
+  for (const bad of ['127.0.0.1', 'host:99999', 'ftp://a.b:21', 'a b:80', 'http://a.b:80/path', 'file:///c:/x', '--proxy-server=x:1', 'a.b:8080;evil.c:1']) {
+    assert.equal(cleanProxy(bad), null, bad);
+  }
+});
+
+// ---- Chinese / Russian text of the Relay panel -----------------------------------------------------
+function translatorFor(lang) {
+  const vm = require('node:vm');
+  const win = { __relayLang: lang };
+  vm.runInNewContext(read('page/i18n.js'), { window: win, navigator: { language: 'en-US' } });
+  return win;
+}
+
+test('i18n: Chinese and Russian have the same phrases, and a missing phrase stays English', () => {
+  const zh = translatorFor('zh'), ru = translatorFor('ru');
+  assert.deepEqual(Object.keys(zh.__relayDict.zh).sort(), Object.keys(ru.__relayDict.ru).sort());
+  assert.equal(zh.__relayT('Sharper video'), '更清晰的视频');
+  assert.equal(ru.__relayT('Sharper video'), 'Чёткое видео');
+  assert.equal(zh.__relayT('Something nobody translated'), 'Something nobody translated');
+  assert.equal(translatorFor('en').__relayT('Sharper video'), 'Sharper video');
+  assert.equal(translatorFor('de').__relayT('Sharper video'), 'Sharper video');
+});
+
+test('i18n: phrases with a changing part, and names that must never change', () => {
+  const zh = translatorFor('zh'), ru = translatorFor('ru');
+  assert.equal(zh.__relayT('Downloading speech model 42%'), '正在下载语音模型 42%');
+  assert.equal(ru.__relayT('Relay connects through 127.0.0.1:7890'), 'Relay подключается через 127.0.0.1:7890');
+  assert.equal(ru.__relayT('Your OpenRouter key is saved on this PC'), 'Ваш ключ OpenRouter сохранён на этом компьютере');
+  // the call-button names Relay searches for are labels, never passed through the translator
+  const callers = read('page/calls.js') + read('page/captions.js');
+  assert.ok(!/__relayT|R\.t\(/.test(read('page/calls.js')), 'calls.js must not translate the labels it searches for');
+  assert.ok(/aria-label/.test(callers));
 });

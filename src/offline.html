@@ -30,12 +30,24 @@
 <body>
   <main>
     <div class="mark" id="mark"></div>
-    <h1>Can't reach WhatsApp</h1>
-    <p>Check your internet connection. Relay keeps trying and reconnects on its own.</p>
-    <a href="https://web.whatsapp.com/">Try now</a>
+    <h1 id="h">Can't reach WhatsApp</h1>
+    <p id="p">Check your internet connection. Relay keeps trying and reconnects on its own.</p>
+    <a id="a" href="https://web.whatsapp.com/">Try now</a>
+    <small id="vpn">WhatsApp is blocked in some countries: turn on your VPN, then Relay reconnects by itself. If your VPN does not change the Windows proxy, open the Relay panel (left bar) and enter its address under Network.</small>
     <small id="why"></small>
   </main>
 <script>
+  const T = {
+    zh: ['无法连接 WhatsApp', '请检查网络连接。Relay 会持续重试并自动重新连接。', '立即重试',
+      '部分地区无法直接访问 WhatsApp：请先打开 VPN，Relay 会自动重新连接。如果 VPN 没有修改 Windows 代理，请打开左侧栏的 Relay 面板，在“Network / 网络”中填写代理地址（例如 127.0.0.1:7890）。'],
+    ru: ['Не удаётся подключиться к WhatsApp', 'Проверьте подключение к интернету. Relay продолжает попытки и подключится сам.', 'Повторить',
+      'В некоторых странах WhatsApp заблокирован: включите VPN, и Relay подключится сам. Если VPN не меняет прокси Windows, откройте панель Relay (левая полоса) и укажите адрес прокси в разделе «Network» (например, 127.0.0.1:7890).']
+  };
+  const L = T[(navigator.language || 'en').slice(0, 2).toLowerCase()];
+  if (L) {
+    document.documentElement.lang = (navigator.language || '').slice(0, 2);
+    ['h', 'p', 'a', 'vpn'].forEach((id, i) => { document.getElementById(id).textContent = L[i]; });
+  }
   const why = new URLSearchParams(location.search).get('c');
   if (why) document.getElementById('why').textContent = why.replace(/^net::/, '');
 </script>

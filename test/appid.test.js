@@ -10,8 +10,10 @@ test('the AUMID set in main.js matches build.appId', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const id = /const APP_ID = '([^']+)'/.exec(main);
   assert.ok(id, 'APP_ID constant not found');
-  assert.match(main, /setAppUserModelId\(APP_ID\)/);
+  assert.match(main, /setAppUserModelId\(RUNTIME_ID\)/);
   assert.equal(id[1], pkg.build.appId);
+  // installed builds use the real id; only a run from source gets the .dev one
+  assert.match(main, /const RUNTIME_ID = app\.isPackaged \? APP_ID : APP_ID \+ '\.dev'/);
 });
 
 test('main.js does not read the build section at runtime', () => {

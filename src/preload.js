@@ -553,15 +553,63 @@ function refreshTheme() {
  * CSS cannot single out - and a drag region swallows clicks. Anything in a header
  * that shows a pointer cursor is marked no-drag.
  */
-const headerChecked = new WeakSet();
+// An element is looked at again every few seconds, not once: a control that is disabled (grey, default cursor)
+// when first seen and enabled later - the search and menu buttons of a chat that is still loading - used to stay
+// in the drag region for ever, which swallows the hover AND the click.
+const headerChecked = new WeakMap();                 // element -> time of the last look
+const HEADER_RECHECK_MS = 2500;
 function markClickableInHeaders() {
+  const now = Date.now();
   for (const el of document.querySelectorAll('header *')) {
-    if (headerChecked.has(el)) continue;
-    headerChecked.add(el);
     if (el.dataset.waNodrag !== undefined) continue;
+    const last = headerChecked.get(el);
+    if (last && now - last < HEADER_RECHECK_MS) continue;
+    headerChecked.set(el, now);
     if (el.childElementCount > 6 || el.tagName === 'svg' || el.tagName === 'path') continue;
-    if (getComputedStyle(el).cursor === 'pointer') el.dataset.waNodrag = '';
+    const cs = getComputedStyle(el);
+    if (cs.cursor === 'pointer' || el.hasAttribute('aria-disabled') || /^(button|a|input)$/i.test(el.tagName) ||
+        (el.getAttribute('role') || '') === 'button') el.dataset.waNodrag = '';
   }
+}
+
+/**
+ * A drag region is measured from the layout, not from what is on top: a header that is hidden under a side
+ * drawer (Settings, Status, Channels...) keeps dragging - and swallowing clicks - underneath it. Headers whose
+ * centre is covered by something that is not inside them stop being drag regions (theme.css).
+ */
+function releaseCoveredHeaders() {
+  for (const h of document.querySelectorAll('header, [data-wa-pane="rail"]')) {
+    const r = h.getBoundingClientRect();
+    if (!r.width || !r.height) { delete h.dataset.relayCovered; continue; }
+    const pts = [[r.left + r.width / 2, r.top + Math.min(r.height / 2, 24)], [r.left + 8, r.top + 8], [r.right - 8, r.top + 8]];
+    const covered = pts.every(([x, y]) => {
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+      const top = document.elementFromPoint(x, y);
+      return top && !h.contains(top) && !top.contains(h);
+    });
+    if (covered) h.dataset.relayCovered = ''; else delete h.dataset.relayCovered;
+  }
+}
+
+/**
+ * WhatsApp pins the left drawer (Settings, Status, Channels, Communities...) to 342px, but the sidebar can be
+ * dragged wider; on some layouts the drawer also starts at the very left edge over the icon rail. Either way a strip of
+ * the chat list showed beside it. The drawer is stretched to the sidebar's right edge.
+ */
+function fitSideDrawer() {
+  const d = document.querySelector('[data-testid="drawer-left"]');
+  const side = document.getElementById('side');
+  if (!d || !side) return;
+  const dr = d.getBoundingClientRect(), sr = side.getBoundingClientRect();
+  if (!dr.width || !sr.width) return;
+  const want = Math.round(sr.right - dr.left);
+  const off = () => { if (d.dataset.relayFit !== undefined) { for (const p of ['flex', 'width', 'max-width']) d.style.removeProperty(p); delete d.dataset.relayFit; } };
+  if (want > 346 && want < innerWidth * 0.8) {                       // wider than WhatsApp's own 342px drawer
+    if (Math.abs(dr.width - want) > 2) {
+      for (const [p, v] of [['flex', '0 0 ' + want + 'px'], ['width', want + 'px'], ['max-width', want + 'px']]) d.style.setProperty(p, v, 'important');
+      d.dataset.relayFit = '';
+    }
+  } else off();                                                       // sidebar back at its normal width: leave the drawer alone
 }
 
 /** The title typeface, as a FontFace built from bytes (no network, so WhatsApp's CSP has no say). */
@@ -624,6 +672,8 @@ async function setupLayout() {
     refresh();
     refreshTheme();
     markClickableInHeaders();
+    releaseCoveredHeaders();
+    fitSideDrawer();
     installCallFullscreenButton();
     syncSharePreview();
     if (panes && panes.row !== observedRow) {
@@ -836,18 +886,17 @@ function hookCallRecording() {
 
     // ---- remote audio tap ----------------------------------------------
     const sources = [];                         // WeakRef<AudioNode> feeding an output
-    let tap = null;                             // { dests: Map<AudioContext, destination>, onNew } while recording
+    const taps = new Set();                     // listeners (recording, captions): { dests: Map<AudioContext, destination>, onNew }
     const origConnect = AudioNode.prototype.connect;
 
-    function tapNode(node) {
-      if (!tap) return;
+    function tapNode(node, t) {
       const ctx = node.context;
-      let d = tap.dests.get(ctx);
+      let d = t.dests.get(ctx);
       if (!d) {
         d = ctx.createMediaStreamDestination();
         d.__relayTap = true;
-        tap.dests.set(ctx, d);
-        tap.onNew(d);
+        t.dests.set(ctx, d);
+        t.onNew(d);
       }
       try { origConnect.call(node, d); } catch (e) { /* node already gone */ }
     }
@@ -863,30 +912,35 @@ function hookCallRecording() {
           if (sources.length > 300) {                      // sound effects connect often; drop the ones already collected
             for (let i = sources.length - 1; i >= 0; i--) if (!sources[i].deref()) sources.splice(i, 1);
           }
-          tapNode(this);
+          for (const t of taps) tapNode(this, t);
         }
       } catch (e) { /* never break WhatsApp's audio */ }
       return result;
     };
 
+    /** Starts a listener: onNew(destination) gets one stream per audio context that plays to the speakers. */
     function startTap(onNew) {
-      tap = { dests: new Map(), onNew };
+      const t = { dests: new Map(), onNew };
+      taps.add(t);
       for (let i = sources.length - 1; i >= 0; i--) {
         const n = sources[i].deref();
-        if (!n) sources.splice(i, 1); else tapNode(n);
+        if (!n) sources.splice(i, 1); else tapNode(n, t);
       }
+      return t;
     }
 
-    function stopTap() {
-      if (!tap) return;
-      for (const [ctx, d] of tap.dests) {
+    function stopTap(t) {
+      if (!t || !taps.delete(t)) return;
+      for (const [ctx, d] of t.dests) {
         for (const ref of sources) {
           const n = ref.deref();
           if (n && n.context === ctx) { try { n.disconnect(d); } catch (e) { /* ignore */ } }
         }
       }
-      tap = null;
     }
+
+    // Captions (src/page/captions.js) listen to the same call audio.
+    Object.defineProperty(window, '__relayTap', { value: { start: startTap, stop: stopTap }, enumerable: false });
 
     // ---- picture ---------------------------------------------------------
     const W = 1280, H = 720;
@@ -959,13 +1013,14 @@ function hookCallRecording() {
         s.__relayOwn = true;
         s.connect(dest);
       };
+      let tap = null;
       window.__relayBuildingAudio = true;
       try {
         const mic = window.__relayMicTrack;
         if (mic && mic.readyState === 'live') add(new MediaStream([mic]));
-        startTap((d) => add(d.stream));
+        tap = startTap((d) => add(d.stream));
       } finally { window.__relayBuildingAudio = false; }
-      return { ctx, dest };
+      return { ctx, dest, tap };
     }
 
     // ---- main process handshake ------------------------------------------
@@ -1018,7 +1073,7 @@ function hookCallRecording() {
           : { mimeType: mime, audioBitsPerSecond: 128000 });
       } catch (err) {                                       // give the file back instead of leaving it open and empty
         clearInterval(state.frameTimer);
-        stopTap();
+        stopTap(state.audio.tap);
         try { state.audio.ctx.close(); } catch (e) { /* ignore */ }
         post({ type: 'close', id });
         return;
@@ -1043,7 +1098,7 @@ function hookCallRecording() {
       state.active = false;
       clearInterval(state.frameTimer);
       try { state.rec.stop(); } catch (e) { /* already stopped */ }
-      stopTap();
+      stopTap(state.audio.tap);
       try { state.audio.ctx.close(); } catch (e) { /* ignore */ }
       for (const v of feeds.values()) v.srcObject = null;
       feeds.clear();
@@ -1845,7 +1900,8 @@ ipcRenderer.invoke('media:prefs')
 // ===========================================================================
 const RELAY_CHANNELS = new Set([
   'state', 'set', 'translate-provider', 'translate-consent', 'key-prompt', 'key-clear',
-  'translate', 'snippets', 'action', 'rnnoise'
+  'translate', 'snippets', 'action', 'rnnoise',
+  'caption-set', 'caption-start', 'caption-stop', 'caption-audio', 'proxy-set', 'wa-lang'
 ]);
 
 function installRelayPanel() {
@@ -1863,6 +1919,10 @@ function installRelayPanel() {
   ipcRenderer.on('relay:state', (_e, st) => {
     window.postMessage({ __relay: 'evt', ch: 'state', data: st }, location.origin);
   });
+  // Other pushes from the main process (caption status, model download progress).
+  ipcRenderer.on('relay:event', (_e, ch, data) => {
+    if (typeof ch === 'string') window.postMessage({ __relay: 'evt', ch, data }, location.origin);
+  });
   try {
     const src = ipcRenderer.sendSync('page:src');
     if (src) webFrame.executeJavaScript(src);
@@ -1871,9 +1931,44 @@ function installRelayPanel() {
   }
 }
 
+// ===========================================================================
+// Files copied in Explorer -> Ctrl+V in a chat.
+//
+// Chromium hands the page nothing for files copied in Windows Explorer, so WhatsApp sees an empty
+// paste. When a real paste arrives with no text, no picture and no files, the main process reads the
+// copied files from Windows (src/main.js, 'clipboard:get-files') and they are re-delivered as an
+// ordinary paste of File objects, which WhatsApp turns into its preview ("send 2 files").
+// Plain text and screenshots never come here: WhatsApp handles those itself.
+// ===========================================================================
+function hookClipboardFiles() {
+  let busy = false;
+  window.addEventListener('paste', async (e) => {
+    if (!e.isTrusted || busy) return;                                       // a real Ctrl+V or menu paste only - never one a script made up
+    const cd = e.clipboardData;
+    if (cd && ((cd.files && cd.files.length) || [...(cd.types || [])].some((t) => /^(text\/|image\/)/.test(t)))) return;
+    busy = true;
+    try {
+      const { files, skipped } = (await ipcRenderer.invoke('clipboard:get-files')) || {};
+      if (skipped) window.postMessage({ __relay: 'evt', ch: 'toast', data: skipped + (skipped === 1 ? ' file is' : ' files are') + ' too large to paste (over 100 MB). Use the attach button.' }, location.origin);
+      if (!files || !files.length) return;
+      const dt = new DataTransfer();
+      for (const f of files) dt.items.add(new File([f.buffer], f.name, { type: f.type, lastModified: f.lastModified }));
+      const active = document.activeElement;
+      const target = (active && active.isContentEditable && active) ||
+        document.querySelector('footer [contenteditable="true"]') || document.querySelector('#main [contenteditable="true"]') || active || document.body;
+      target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: dt }));
+    } catch (err) {
+      console.warn('[Relay] pasting copied files failed:', err && err.message);
+    } finally {
+      busy = false;
+    }
+  }, true);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   // Pop-out windows (about:blank, filled in by WhatsApp) need none of this.
   if (location.origin !== 'https://web.whatsapp.com') return;
+  hookClipboardFiles();
   watchBadge();
   hookNotifications();
   watchForBrowserOnly();

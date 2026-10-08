@@ -95,6 +95,9 @@ html[data-wa-dragging] * { cursor: col-resize !important; user-select: none !imp
 }
 header,
 [data-wa-pane="rail"] { -webkit-app-region: drag; }
+/* ...except while something (a side drawer, a dialog) is on top of it: a hidden header must not keep catching clicks. */
+header[data-relay-covered],
+[data-wa-pane="rail"][data-relay-covered] { -webkit-app-region: no-drag !important; }
 button, a, input, textarea, select, label, summary,
 [role="button"], [role="tab"], [role="menu"], [role="menuitem"], [role="option"],
 [role="switch"], [role="checkbox"], [role="slider"], [role="dialog"],
@@ -463,6 +466,9 @@ html:not([data-relay-light]), html:not([data-relay-light]) body { background: va
 .relay-seg-b { padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: #8fa1b3; transition: background-color .15s ease, color .15s ease; }
 .relay-seg-b[aria-pressed="true"] { background: var(--relay-accent, #5288c1); color: var(--relay-on-accent, #fff); }
 .relay-seg-b:not([aria-pressed="true"]):hover { color: #fff; }
+.relay-select { flex: none; max-width: 150px; padding: 5px 8px; border: 0; border-radius: 8px; font: inherit; font-size: 12.5px; color: inherit; background: rgba(255, 255, 255, .08); cursor: pointer; }
+.relay-select:focus-visible { outline: 2px solid var(--relay-accent-soft, #86b3ea); }
+.relay-select option { background: #172029; color: #e6edf3; }
 
 .relay-note { margin: 4px 0 2px 40px; font-size: 12px; color: #9fb0c1; }
 .relay-note-dim { color: #6f8398; }
@@ -488,9 +494,9 @@ html:not([data-relay-light]), html:not([data-relay-light]) body { background: va
 #relay-toast {
   position: fixed;
   left: 50%;
-  bottom: 28px;
+  top: 68px;                       /* placed under the open chat's header by core.js */
   z-index: 10001;
-  max-width: 420px;
+  max-width: min(420px, 90vw);
   padding: 9px 18px;
   border-radius: 999px;
   background: var(--relay-3, #1e2935);
@@ -499,7 +505,7 @@ html:not([data-relay-light]), html:not([data-relay-light]) body { background: va
   color: #e6edf3;
   font: 13px/1.3 "Segoe UI", system-ui, sans-serif;
   opacity: 0;
-  transform: translate(-50%, 8px);
+  transform: translate(-50%, -8px);
   pointer-events: none;
   transition: opacity .2s ease, transform .2s ease;
 }
@@ -574,7 +580,75 @@ body.privacy-blur-active [data-testid="conversation-panel-messages"] [data-testi
   filter: blur(0);
 }
 
+/* ---- Live call captions (src/page/captions.js) ------------------------------------------------
+   Placed inside the call panel, so they are there in full screen as well. The type is a semibold
+   system face (Segoe UI Variable, with the Windows fonts for Indic, Arabic, CJK and Thai as
+   fallbacks) on a dark frosted pill: readable over bright video, and scaled with the call window. */
+#relay-cc {
+  position: absolute; left: 0; right: 0; bottom: var(--cc-bottom, 96px);
+  transform: translate(var(--cc-dx, 0px), var(--cc-dy, 0px));
+  z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 0 4%; box-sizing: border-box; pointer-events: none; color: #fff;
+  font: 600 var(--cc-fs, 18px)/1.38 "Segoe UI Variable Text", "Segoe UI", "Nirmala UI", "Leelawadee UI", "Malgun Gothic", "Yu Gothic UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  letter-spacing: .005em;
+  -webkit-app-region: no-drag;
+}
+/* Top of the call instead of the bottom (near the camera, where a viewer's eyes already are). */
+#relay-cc[data-edge="top"] { bottom: auto; top: var(--cc-top, 72px); }
+#relay-cc[data-edge="top"] .cc-pop { bottom: auto; top: 100%; margin: 8px auto 0; }
+#relay-cc .cc-lines { display: flex; flex-direction: column; align-items: center; gap: .3em; max-width: min(100%, 44em); pointer-events: auto; cursor: grab; touch-action: none; }
+#relay-cc[data-dragging="1"] .cc-lines { cursor: grabbing; }
+#relay-cc[data-dragging="1"] .cc-line { transition: none; }
+#relay-cc .cc-line {
+  margin: 0; padding: .38em .85em .42em; border-radius: .7em; overflow-wrap: anywhere;
+  background: rgba(10, 14, 18, .78); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  text-align: center; text-wrap: balance; text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+  transition: opacity .3s ease, transform .3s ease;
+  animation: cc-line-in .26s cubic-bezier(.2, .8, .2, 1) both;
+}
+#relay-cc .cc-line[data-old="1"] { opacity: .62; transform: scale(.97); }
+#relay-cc .cc-line[data-out="1"] { opacity: 0; transform: translateY(-4px); }
+#relay-cc .cc-w { animation: cc-word .32s ease both; animation-delay: calc(var(--i, 0) * 42ms); }
+#relay-cc .cc-orig { display: block; margin-top: .15em; font-weight: 500; font-size: .72em; opacity: .72; }
+@keyframes cc-line-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes cc-word { from { opacity: 0; } to { opacity: 1; } }
+
+#relay-cc .cc-chip {
+  pointer-events: auto; display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px 5px 10px;
+  border: 0; border-radius: 999px; cursor: pointer; color: #dfe8f1;
+  font: 600 12px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: .02em;
+  background: rgba(10, 14, 18, .7); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  transition: opacity .3s ease, background-color .15s ease;
+}
+#relay-cc .cc-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #6f8398; transition: background-color .2s ease; }
+#relay-cc .cc-chip[data-speaking="1"]::before { background: var(--relay-accent-strong, #7fb2ff); animation: cc-pulse 1s ease-in-out infinite; }
+#relay-cc .cc-chip[data-busy="1"]::before { background: #e5a74b; }
+#relay-cc .cc-chip:hover { background: rgba(24, 32, 40, .9); }
+#relay-cc .cc-chip:focus-visible { outline: 2px solid var(--relay-accent-soft, #86b3ea); outline-offset: 2px; }
+#relay-cc[data-idle="1"] .cc-chip { opacity: .45; }
+#relay-cc[data-idle="1"] .cc-chip:hover { opacity: 1; }
+@keyframes cc-pulse { 50% { transform: scale(1.5); opacity: .6; } }
+
+#relay-cc .cc-pop {
+  pointer-events: auto; position: absolute; bottom: 100%; left: 0; right: 0; margin: 0 auto 8px;      /* centred without a transform: the pop-in animation owns that */
+  width: min(320px, 92%); box-sizing: border-box; padding: 8px 14px 10px; border-radius: 14px;
+  background: var(--relay-2, #172029); border: 1px solid rgba(255, 255, 255, .08);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .3); color: #e6edf3;
+  font: 500 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: 0;
+  animation: relay-pop .16s cubic-bezier(.2, .8, .2, 1) both;
+}
+#relay-cc .cc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+#relay-cc .cc-lbl { color: #c9d6e2; }
+#relay-cc .cc-pop .relay-seg { margin: 0; }
+#relay-cc .cc-select { font: inherit; color: inherit; max-width: 160px; padding: 5px 8px; border: 0; border-radius: 8px; background: rgba(255, 255, 255, .08); cursor: pointer; }
+#relay-cc .cc-select:focus-visible { outline: 2px solid var(--relay-accent-soft, #86b3ea); }
+#relay-cc .cc-select option { background: #172029; color: #e6edf3; }
+#relay-cc .cc-hint { margin-top: 4px; font-size: 12px; color: #8fa1b3; }
+
 /* People who ask the system for less motion get none: the panel appears, text fades in, nothing glides. */
 @media (prefers-reduced-motion: reduce) {
-  .relay-panel, .relay-tr, #relay-toast, .relay-sw, .relay-sw-knob, .relay-rail-btn .relay-mark { animation: none !important; transition: none !important; }
+  .relay-panel, .relay-tr, #relay-toast, .relay-sw, .relay-sw-knob, .relay-rail-btn .relay-mark,
+  #relay-cc .cc-line, #relay-cc .cc-w, #relay-cc .cc-chip, #relay-cc .cc-chip::before, #relay-cc .cc-pop { animation: none !important; transition: none !important; }
 }

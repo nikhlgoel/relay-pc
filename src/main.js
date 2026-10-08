@@ -6,14 +6,16 @@ process.on('unhandledRejection', (err) => console.error('Unhandled Rejection:', 
 const {
   app, BrowserWindow, Tray, Menu, shell, session, clipboard,
   nativeImage, ipcMain, globalShortcut, dialog, systemPreferences, screen, desktopCapturer, nativeTheme,
-  Notification, powerSaveBlocker, safeStorage, net, webContents
+  Notification, powerSaveBlocker, safeStorage, net, webContents, utilityProcess, powerMonitor
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 const Store = require('electron-store');
 
 const { autoUpdater } = require('electron-updater');
-const { setupHub } = require('./hub');
+const { setupHub, cleanProxy } = require('./hub');
+const { setupCaptions } = require('./captions');
 const {
   isWhatsAppWebUrl, isWhatsAppOwnedUrl, deepLinkToWebUrl, shouldOpenExternally
 } = require('./urls');
@@ -64,6 +66,7 @@ const store = openStore({
     // every frame, so both can be switched off.
     enhanceCamera: true,
     enhanceMic: true,
+    sharpVideo: true,
     // Offer calling even where WhatsApp has not enabled it for the account.
     webCalling: true,
     // Start WhatsApp's call engine (WebAssembly + ~20 worker threads) on the first
@@ -84,10 +87,12 @@ const store = openStore({
   const shapes = {
     bounds: 'object', callBounds: 'object', maximized: 'boolean', minimizeToTray: 'boolean', startMinimized: 'boolean',
     zoom: 'number', paneWidth: 'number', hardwareAcceleration: 'boolean', privacyBlur: 'boolean', lowPower: 'boolean',
-    blockTelemetry: 'boolean', enhanceCamera: 'boolean', enhanceMic: 'boolean', webCalling: 'boolean',
+    blockTelemetry: 'boolean', enhanceCamera: 'boolean', enhanceMic: 'boolean', sharpVideo: 'boolean', proxy: 'string', waLang: 'string', webCalling: 'boolean',
     lazyCallEngine: 'boolean', autoRecord: 'boolean', noiseSuppression: 'boolean', dnd: 'boolean', translateAll: 'boolean',
     snippets: 'array', recordingsDir: 'string', recordingConsentAck: 'boolean', translateChoice: 'string',
-    translateConsent: 'object', translateKeys: 'object', translateKeyEnc: 'string', appIdentity: 'string'
+    translateConsent: 'object', translateKeys: 'object', translateKeyEnc: 'string', appIdentity: 'string',
+    captionLang: 'string', captionSize: 'string', captionOriginal: 'boolean', captionModel: 'string', captionFrom: 'string',
+    captionGpu: 'number', captionConsent: 'object'
   };
   const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
   for (const [key, want] of Object.entries(shapes)) {
@@ -143,6 +148,10 @@ function configureRuntime() {
 
   app.userAgentFallback = CHROME_UA;
 
+  // Relay's call extras (captions, recording, shortcuts, back) find WhatsApp's buttons by their English names. On a PC set to
+  // another language WhatsApp would label them in that language, so the user may pin WhatsApp to English (see askWhatsAppLanguage).
+  if (store.get('waLang') === 'en') app.commandLine.appendSwitch('lang', 'en-US');
+
   // One call only: appendSwitch replaces the previous value for the same
   // switch, so a second 'disable-features' call silently discarded this whole
   // list (only CalculateNativeWinOcclusion survived).
@@ -196,7 +205,11 @@ nativeTheme.themeSource = 'dark';
 // detaches all three. It is a constant because electron-builder removes the
 // 'build' section from the package.json inside the packaged app.
 const APP_ID = 'com.nikhlgoel.relay';
-app.setAppUserModelId(APP_ID);
+// A run from source (npm start) gets its own identity: pinning that window must not
+// create a Start-menu shortcut that claims the installed Relay's AUMID and hides it
+// from Start and Search (it showed up as "Electron").
+const RUNTIME_ID = app.isPackaged ? APP_ID : APP_ID + '.dev';
+app.setAppUserModelId(RUNTIME_ID);
 
 let mainWindow = null;
 let tray = null;
@@ -271,7 +284,7 @@ function brandWindow(win) {
     const args = process.argv.slice(1).filter((a) => a.startsWith('--profile='));
     const relaunch = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), ...args].map(quoteArg).join(' ');
     win.setAppDetails({
-      appId: APP_ID,
+      appId: RUNTIME_ID,
       appIconPath: relayIcoPath,
       appIconIndex: 0,
       relaunchCommand: relaunch,
@@ -285,7 +298,7 @@ function registerAppIdentity() {
   if (process.platform !== 'win32') return;
   const stamp = relayIcoPath + '|' + app.getVersion();
   if (store.get('appIdentity') === stamp) return;
-  const key = 'HKCU\\Software\\Classes\\AppUserModelId\\' + APP_ID;
+  const key = 'HKCU\\Software\\Classes\\AppUserModelId\\' + RUNTIME_ID;
   const add = (name, value) => new Promise((resolve) =>
     require('child_process').execFile('reg', ['add', key, '/v', name, '/d', value, '/f'], { windowsHide: true }, (err) => resolve(!err)));
   Promise.all([add('DisplayName', 'Relay'), add('IconUri', relayIcoPath), add('IconBackgroundColor', 'FF111921')])
@@ -585,6 +598,7 @@ function createWindow() {
       if (reachable) { offline = false; mainWindow.loadURL(WHATSAPP_URL); } else probe();
     }, Math.min(3000 * 1.6 ** loadRetries++, 30000));
   };
+  mainWindow.webContents.once('did-finish-load', () => { if (!offline) setTimeout(askWhatsAppLanguage, 4000); });
   mainWindow.webContents.on('did-finish-load', () => {
     if (!offline) loadRetries = 0;
     if (offline) {
@@ -601,6 +615,12 @@ function createWindow() {
     probe();
   });
   mainWindow.on('closed', () => clearTimeout(probeTimer));
+
+  // The mouse's side buttons (and a keyboard's "browser back" key) arrive as Windows app commands.
+  // WhatsApp is a single page, so the page decides what "back" means (src/page/nav.js).
+  mainWindow.on('app-command', (_e, cmd) => {
+    if (cmd === 'browser-backward' && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', 'nav', 'back');
+  });
 
   mainWindow.webContents.on('context-menu', (_e, params) =>
     showContextMenu(ses, params));
@@ -1208,6 +1228,56 @@ on('flash-window', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Files copied in Windows Explorer (Ctrl+C) and pasted into a chat (Ctrl+V).
+// Electron 44's clipboard is the web-style one (read / write / readText ...): it cannot list files, and
+// the page's own paste event carries none from Explorer. So Windows is asked directly - in UTF-8, or
+// Russian and Chinese file names come back as question marks - and the preload hands the result to
+// WhatsApp as an ordinary paste of File objects (src/preload.js, hookClipboardFiles).
+// ---------------------------------------------------------------------------
+const MIME_BY_EXT = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.bmp': 'image/bmp', '.heic': 'image/heic', '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.webm': 'video/webm', '.3gp': 'video/3gpp',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
+  '.pdf': 'application/pdf', '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed',
+  '.txt': 'text/plain', '.csv': 'text/csv', '.json': 'application/json', '.md': 'text/markdown',
+  '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.apk': 'application/vnd.android.package-archive'
+};
+const PASTE_FILE_MAX = 100 * 1024 * 1024;          // one file; bigger ones go through the attach button
+const PASTE_TOTAL_MAX = 200 * 1024 * 1024;         // everything in one paste (it travels through IPC)
+let pasteReading = false;
+
+handle('clipboard:get-files', () => {
+  if (process.platform !== 'win32' || pasteReading) return { files: [], skipped: 0 };
+  pasteReading = true;
+  return new Promise((resolve) => {
+    const script = '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);(Get-Clipboard -Format FileDropList).FullName';
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', script],
+      { windowsHide: true, timeout: 6000, maxBuffer: 1024 * 1024, encoding: 'utf8' }, async (err, stdout) => {
+        try {
+          if (err || !stdout) return resolve({ files: [], skipped: 0 });
+          const paths = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 30);
+          const files = [];
+          let total = 0, skipped = 0;
+          for (const p of paths) {
+            try {
+              const st = await fs.promises.stat(p);
+              if (!st.isFile()) continue;
+              if (st.size > PASTE_FILE_MAX || total + st.size > PASTE_TOTAL_MAX) { skipped++; continue; }
+              total += st.size;
+              files.push({ name: path.basename(p), type: MIME_BY_EXT[path.extname(p).toLowerCase()] || 'application/octet-stream', lastModified: st.mtimeMs, buffer: await fs.promises.readFile(p) });
+            } catch (e) { /* gone, or no permission: skip it */ }
+          }
+          resolve({ files, skipped });
+        } finally { pasteReading = false; }
+      });
+  });
+});
+
 handle('pane-width:get', () => store.get('paneWidth'));
 handle('privacyBlur:get', () => store.get('privacyBlur'));
 handle('media:prefs', () => mediaPrefs());
@@ -1371,10 +1441,17 @@ try { FONT_B64 = fs.readFileSync(path.join(__dirname, 'assets', 'fonts', 'newsre
 ipcMain.on('font:get', (e) => { e.returnValue = fromWhatsApp(e) ? FONT_B64 : ''; });
 
 // Page-side modules, delivered to the preload as one string and run in the page.
-const PAGE_MODULES = ['core', 'translate', 'hub', 'calls', 'scroll'];
+/** The language Windows is set to ('zh', 'ru', 'en' ...), even when WhatsApp itself is pinned to English. */
+function osLanguage() {
+  if (process.env.RELAY_TEST && process.env.RELAY_TEST_OSLANG) return process.env.RELAY_TEST_OSLANG;      // tests only
+  try { return String((app.getPreferredSystemLanguages()[0] || app.getLocale() || 'en')).slice(0, 2).toLowerCase(); } catch (e) { return 'en'; }
+}
+const PAGE_MODULES = ['i18n', 'core', 'translate', 'hub', 'calls', 'captions', 'nav', 'video', 'scroll'];
 ipcMain.on('page:src', (e) => {
+  if (process.env.RELAY_TEST && process.env.RELAY_TEST_NO_MODULES) { e.returnValue = ''; return; }      // tests only: "is it Relay or is it WhatsApp?"
   e.returnValue = fromWhatsApp(e)
-    ? PAGE_MODULES.map((n) => fs.readFileSync(path.join(__dirname, 'page', n + '.js'), 'utf8')).join('\n;\n')
+    ? 'window.__relayLang = ' + JSON.stringify(osLanguage()) + ';\n;\n' +
+      PAGE_MODULES.map((n) => fs.readFileSync(path.join(__dirname, 'page', n + '.js'), 'utf8')).join('\n;\n')
     : '';
 });
 
@@ -1426,13 +1503,48 @@ function promptForKey(provider) {
   });
 }
 
+// Where WhatsApp needs a VPN or proxy: Relay follows the Windows proxy settings, or the address typed in the Relay panel.
+// Both the page's session and the one Relay's own requests (model download, translation) use are pointed at it.
+async function applyProxy() {
+  const rules = cleanProxy(store.get('proxy'));
+  const config = rules ? { mode: 'fixed_servers', proxyRules: rules, proxyBypassRules: '<local>' } : { mode: 'system' };
+  await Promise.all([session.defaultSession, session.fromPartition(currentPartition)].map((s) => s.setProxy(config).catch(() => {})));
+}
+
+function relaunchRelay() {
+  isQuitting = true;
+  app.relaunch();
+  app.quit();
+}
+
+// On a PC that is not set to English, WhatsApp labels its buttons in that language and Relay's call extras cannot find them.
+// Asked once, in the user's own language; changeable any time in the Relay panel.
+const WA_LANG_TEXT = {
+  en: ['WhatsApp language', 'Use English for WhatsApp?', 'The extras Relay adds to calls (captions, recording, keyboard shortcuts, sharper video, back button) work with WhatsApp in English. You can change this any time in the Relay panel.', ['Use English', 'Keep my language']],
+  zh: ['WhatsApp 语言', '将 WhatsApp 设为英文？', 'Relay 在通话中的附加功能（字幕、录音、键盘快捷键、返回键）需要 WhatsApp 使用英文界面。您可以随时在 Relay 面板中更改。', ['使用英文', '保持我的语言']],
+  ru: ['Язык WhatsApp', 'Использовать английский в WhatsApp?', 'Дополнительные функции Relay во время звонков (субтитры, запись, горячие клавиши, кнопка «назад») работают, когда WhatsApp на английском. Это можно изменить в любой момент в панели Relay.', ['Английский', 'Оставить мой язык']]
+};
+async function askWhatsAppLanguage() {
+  if (process.env.RELAY_TEST || store.get('waLang') || !mainWindow || mainWindow.isDestroyed()) return;
+  const code = String(app.getLocale() || 'en').slice(0, 2).toLowerCase();
+  if (code === 'en') { store.set('waLang', 'auto'); return; }
+  const t = WA_LANG_TEXT[code] || WA_LANG_TEXT.en;
+  const { response } = await showBox(mainWindow, { type: 'question', title: t[0], message: t[1], detail: t[2], buttons: t[3], defaultId: 0, cancelId: 1 });
+  store.set('waLang', response === 0 ? 'en' : 'auto');
+  if (response === 0) relaunchRelay();
+}
+
+let captions = null;
 hub = setupHub({
+  relaunch: relaunchRelay,
+  applyProxy,
   store, safeStorage, net, handle,
   send: (channel, data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
   },
   showBox: (opts) => showBox(mainWindow, opts),
   promptKey: promptForKey,
+  extraState: () => (captions ? { captions: captions.state() } : {}),
   afterChange: (name) => {
     if (name === 'dnd') applyDnd();
     if (name === 'autoRecord') onAutoRecordToggled();
@@ -1440,6 +1552,18 @@ hub = setupHub({
     refreshTrayMenu();
   }
 });
+
+// Live call captions: speech-to-text on this PC (src/captions.js), shown by src/page/captions.js.
+captions = setupCaptions({
+  app, store, net, handle, utilityProcess,
+  showBox: (opts) => showBox(mainWindow, opts),
+  event: (channel, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('relay:event', channel, data);
+  },
+  pushState: () => hub.push(),
+  isOnBattery: () => { try { return powerMonitor.isOnBatteryPower(); } catch (e) { return false; } }
+});
+app.on('will-quit', () => captions.shutdown());
 
 // RNNoise: the worklet source and the WebAssembly build (SIMD where the CPU has it).
 let rnnoiseAssets = null;
@@ -1461,6 +1585,13 @@ handle('relay:action', (_e, name) => {
   if (name === 'choose-recordings') return chooseRecordingsDir();
   if (name === 'about') return showAbout();
   if (name === 'get-openrouter-key') return openExternalSafe('https://openrouter.ai/keys');
+  if (name === 'press-escape') {                                   // "back" from a mouse side button: a real Escape key press, which WhatsApp treats as its own shortcut
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wc = mainWindow.webContents;
+    if (!wc.isFocused()) wc.focus();                                // a key press goes to the focused page
+    for (const type of ['keyDown', 'keyUp']) wc.sendInputEvent({ type, keyCode: 'Escape' });
+    return;
+  }
   throw new Error('Unknown action');
 });
 handle('system:accent-color', () => getSystemAccent());
@@ -1495,8 +1626,9 @@ async function badgeIcon(n) {
 }
 
 // ---------------------------------------------------------------------------
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!gotLock) return;                 // another Relay owns this profile; this copy is on its way out
+  await applyProxy();
   createWindow();
   if (!process.env.RELAY_TEST) {
     createTray();

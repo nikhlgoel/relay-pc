@@ -20,6 +20,12 @@ const PROVIDERS = {
   claude: { name: 'Claude (Anthropic)', host: 'api.anthropic.com', needsKey: true, note: '' },
   google: { name: 'Google Translate', host: 'translate.googleapis.com', needsKey: false, note: '' }
 };
+/** A proxy address Chromium accepts: host:port, optionally with http://, https://, socks4:// or socks5://. '' = follow Windows. null = invalid. */
+function cleanProxy(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return '';
+  return /^((https?|socks4|socks5):\/\/)?([A-Za-z0-9-]+\.)*[A-Za-z0-9-]+:\d{1,5}$/i.test(t) && Number(t.split(':').pop()) <= 65535 ? t : null;
+}
 const MAX_SNIPPETS = 40;
 const MAX_SNIPPET_LEN = 1000;
 
@@ -29,6 +35,7 @@ const SWITCHES = {
   noise: 'noiseSuppression',
   camera: 'enhanceCamera',
   mic: 'enhanceMic',
+  sharpVideo: 'sharpVideo',
   autoRecord: 'autoRecord',
   translateAll: 'translateAll'
 };
@@ -42,7 +49,7 @@ function cleanSnippets(list) {
 }
 
 function setupHub(ctx) {
-  const { store, safeStorage, net, handle, send, showBox, promptKey, afterChange } = ctx;
+  const { store, safeStorage, net, handle, send, showBox, promptKey, afterChange, extraState, applyProxy, relaunch } = ctx;
   const cache = new Map();              // "provider\0text" -> result, newest last
 
   const consented = (p) => Boolean((store.get('translateConsent') || {})[p]);
@@ -75,6 +82,9 @@ function setupHub(ctx) {
       noise: Boolean(store.get('noiseSuppression')),
       camera: Boolean(store.get('enhanceCamera')),
       mic: Boolean(store.get('enhanceMic')),
+      sharpVideo: store.get('sharpVideo') !== false,
+      proxy: cleanProxy(store.get('proxy')) || '',
+      waLang: store.get('waLang') === 'en' ? 'en' : 'auto',
       autoRecord: Boolean(store.get('autoRecord')),
       translate: {
         all: Boolean(store.get('translateAll')),
@@ -85,7 +95,8 @@ function setupHub(ctx) {
         keyStorage: safeStorage.isEncryptionAvailable(),
         consent: consented(p)
       },
-      snippets: cleanSnippets(store.get('snippets'))
+      snippets: cleanSnippets(store.get('snippets')),
+      ...(extraState ? extraState() : {})            // e.g. { captions } from src/captions.js
     };
   }
 
@@ -98,6 +109,29 @@ function setupHub(ctx) {
     if (!key || typeof value !== 'boolean') throw new Error('Unknown setting');
     store.set(key, value);
     afterChange(name, value);
+    return state();
+  });
+
+  // --- WhatsApp's language: Relay's call extras need the English button names ---------------
+  handle('relay:wa-lang', async (_e, value) => {
+    if (value !== 'en' && value !== 'auto') throw new Error('Unknown language choice');
+    if (store.get('waLang') === value || (value === 'auto' && store.get('waLang') !== 'en')) { store.set('waLang', value); return state(); }
+    store.set('waLang', value);
+    const { response } = await showBox({
+      type: 'question', title: 'Relay', message: 'Restart Relay to change the language of WhatsApp?',
+      detail: 'Your chats and drafts are kept.', buttons: ['Restart now', 'Later'], defaultId: 0, cancelId: 1
+    });
+    if (response === 0 && relaunch) relaunch();
+    return state();
+  });
+
+  // --- network: for places where WhatsApp needs a VPN or proxy ----------------------------
+  handle('relay:proxy-set', async (_e, value) => {
+    const v = cleanProxy(value);
+    if (v === null) throw new Error('Use the form 127.0.0.1:7890 or socks5://127.0.0.1:1080');
+    if (v) store.set('proxy', v); else store.delete('proxy');
+    if (applyProxy) await applyProxy();
+    afterChange('proxy', v);
     return state();
   });
 
@@ -207,4 +241,4 @@ function setupHub(ctx) {
   return { state, push };
 }
 
-module.exports = { setupHub, PROVIDERS, cleanSnippets };
+module.exports = { setupHub, PROVIDERS, cleanSnippets, cleanProxy };

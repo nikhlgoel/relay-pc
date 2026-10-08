@@ -5,8 +5,10 @@
   'use strict';
   if (window.__relay) return;
 
+  const T = (s) => (typeof window.__relayT === 'function' ? window.__relayT(s) : s);       // Chinese / Russian text (src/page/i18n.js)
   const pending = new Map();
   const subs = new Set();
+  const listeners = new Map();         // push channel -> Set of handlers (R.on)
   let seq = 0;
   let state = null;
 
@@ -25,8 +27,12 @@
       pending.delete(d.id);
       clearTimeout(p.timer);
       if (d.error) p.reject(new Error(d.error)); else p.resolve(d.result);
-    } else if (d.__relay === 'evt' && d.ch === 'state') {
-      setState(d.data);
+    } else if (d.__relay === 'evt') {
+      if (d.ch === 'state') setState(d.data);
+      else {
+        const set = listeners.get(d.ch);
+        if (set) set.forEach((fn) => { try { fn(d.data); } catch (e) { /* one bad listener must not stop the rest */ } });
+      }
     }
   });
 
@@ -40,6 +46,7 @@
     mic: 'M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z',
     record: 'M12 7a5 5 0 100 10 5 5 0 000-10zm0-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
     folder: 'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
+    caption: 'M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z',
     info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
     close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
@@ -52,13 +59,15 @@
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(props || {})) {
       if (v == null || v === false) continue;
+      if (k === 'raw') continue;                                            // raw: true = user-written text, never translated
       if (k === 'class') n.className = v;
-      else if (k === 'text') n.textContent = v;
+      else if (k === 'text') n.textContent = props.raw ? v : T(v);
       else if (k === 'on') for (const [ev, fn] of Object.entries(v)) n.addEventListener(ev, fn);
       else if (k === 'attrs') for (const [a, av] of Object.entries(v)) n.setAttribute(a, av);
+      else if ((k === 'title' || k === 'placeholder') && typeof v === 'string' && !props.raw) n[k] = T(v);
       else n[k] = v;
     }
-    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(typeof kid === 'string' && !props.raw ? T(kid) : kid);
     return n;
   }
 
@@ -79,7 +88,13 @@
   function toast(text) {
     let t = document.getElementById('relay-toast');
     if (!t) { t = el('div', { id: 'relay-toast', attrs: { role: 'status' } }); document.body.append(t); }
-    t.textContent = text;
+    t.textContent = T(text);
+    // Under the header of the open chat (never over the message box), centred on the chat, not the window.
+    const main = document.getElementById('main');
+    const r = main && main.getBoundingClientRect();
+    const hdr = main && main.querySelector('header');
+    t.style.left = Math.round(r && r.width > 200 ? r.left + r.width / 2 : window.innerWidth / 2) + 'px';
+    t.style.top = Math.round((hdr ? hdr.getBoundingClientRect().bottom : 56) + 12) + 'px';
     t.dataset.show = '1';
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { t.dataset.show = ''; }, 3600);
@@ -96,8 +111,15 @@
       });
     },
     subscribe(fn) { subs.add(fn); if (state) fn(state); return () => subs.delete(fn); },
-    el, icon, toast
+    /** Listens to a push from the main process (e.g. 'caption-status'); returns an unsubscribe function. */
+    on(ch, fn) {
+      if (!listeners.has(ch)) listeners.set(ch, new Set());
+      listeners.get(ch).add(fn);
+      return () => listeners.get(ch).delete(fn);
+    },
+    el, icon, toast, t: T
   };
 
+  window.__relay.on('toast', (text) => { if (typeof text === 'string') toast(text.slice(0, 200)); });   // messages from the preload (e.g. a file too big to paste)
   window.__relay.call('state').then(setState).catch(() => {});
 })();
