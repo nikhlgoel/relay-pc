@@ -1,6 +1,6 @@
 {
   "name": "relay",
-  "version": "0.2.2",
+  "version": "0.3.2",
   "repository": "nikhlgoel/whatsapp-pc",
   "description": "Relay - a native Windows desktop client for WhatsApp",
   "productName": "Relay",
@@ -68,7 +68,8 @@
       "installerIcon": "icon.ico",
       "uninstallerIcon": "icon.ico",
       "installerHeaderIcon": "icon.ico",
-      "uninstallDisplayName": "Relay"
+      "uninstallDisplayName": "Relay",
+      "artifactName": "RelayInstaller${version}.${ext}"
     },
     "portable": {
       "artifactName": "Relay-portable-${version}.exe"
